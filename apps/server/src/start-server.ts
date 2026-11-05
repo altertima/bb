@@ -27,6 +27,7 @@ import {
   setSkippedAppUpdate,
   listRunningThreads,
   setAppSettings,
+  startWalCheckpointer,
 } from "@bb/db";
 import { initDb } from "./db.js";
 import { createApp } from "./server.js";
@@ -140,6 +141,8 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
     dataDir: serverConfig.BB_DATA_DIR,
     logger,
   });
+  const walCheckpointer = startWalCheckpointer({ logger });
+  walCheckpointer.attach(db.$client);
   const serverImport = await applyServerImportAtBoot({
     dataDir: serverConfig.BB_DATA_DIR,
     db,
@@ -390,6 +393,7 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
       terminalSessions,
       watchInterests,
       sharedPorts,
+      walCheckpointer,
     },
     {
       serverMove: {
@@ -467,6 +471,7 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
     plugins: pluginService,
     telemetry,
     terminalSessions,
+    walCheckpointer,
   };
   const providerModelCatalogPrewarm =
     pendingServerMove === null
@@ -576,6 +581,7 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
       await tunnelIngress.closeAll();
       await closeWebSockets();
       await closeServer;
+      await walCheckpointer.stop();
     })();
     return shutdownPromise;
   };

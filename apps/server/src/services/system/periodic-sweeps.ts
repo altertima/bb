@@ -74,17 +74,21 @@ import { deliverLegacyDeferredThreadMessages } from "../threads/legacy-deferred-
 import { releaseOrphanedQueuedMessageDispatchClaims } from "../threads/queued-messages.js";
 import { runEventLoopWork, runEventLoopWorkSync } from "./event-loop-work.js";
 
-type DatabaseMaintenanceSweepDeps = Pick<AppDeps, "db" | "logger">;
+type DatabaseMaintenanceSweepDeps = Pick<
+  AppDeps,
+  "db" | "logger" | "walCheckpointer"
+>;
 
 interface PluginScheduleSweeper {
   sweepDueSchedules(now: number): Promise<void>;
 }
 
-type PeriodicSweepDeps = LoggedPendingInteractionWorkSessionDeps & {
-  pluginSchedules: PluginScheduleSweeper;
-  /** Liveness directory for `plugin:<id>` wait holders. */
-  plugins: QueueWaitPluginDirectory;
-};
+type PeriodicSweepDeps = LoggedPendingInteractionWorkSessionDeps &
+  Pick<AppDeps, "walCheckpointer"> & {
+    pluginSchedules: PluginScheduleSweeper;
+    /** Liveness directory for `plugin:<id>` wait holders. */
+    plugins: QueueWaitPluginDirectory;
+  };
 
 const DATABASE_MAINTENANCE_CHECK_INTERVAL_MS = 60 * 60_000;
 const DATABASE_INCREMENTAL_VACUUM_CHUNK_PAGES = 256;
@@ -177,7 +181,7 @@ export async function runPeriodicSweepJobs(
 }
 
 async function runChunkedIncrementalVacuum(
-  db: DatabaseMaintenanceSweepDeps["db"],
+  deps: DatabaseMaintenanceSweepDeps,
 ): Promise<ReturnType<typeof runIncrementalVacuum>> {
   let first: ReturnType<typeof runIncrementalVacuum> | null = null;
   let last: ReturnType<typeof runIncrementalVacuum> | null = null;
@@ -187,9 +191,10 @@ async function runChunkedIncrementalVacuum(
     vacuumedPages += DATABASE_INCREMENTAL_VACUUM_CHUNK_PAGES
   ) {
     if (last !== null) {
+      await deps.walCheckpointer.checkpoint(deps.db.$client);
       await new Promise<void>((resolve) => setImmediate(resolve));
     }
-    last = runIncrementalVacuum(db, {
+    last = runIncrementalVacuum(deps.db, {
       maxPages: Math.min(
         DATABASE_INCREMENTAL_VACUUM_CHUNK_PAGES,
         DATABASE_INCREMENTAL_VACUUM_MAX_PAGES - vacuumedPages,
@@ -252,7 +257,7 @@ export async function runDatabaseMaintenanceSweep(
       return;
     }
     try {
-      const result = await runChunkedIncrementalVacuum(deps.db);
+      const result = await runChunkedIncrementalVacuum(deps);
       deps.logger.info({ result }, "Incremental database vacuum completed");
     } catch (error) {
       deps.logger.warn({ err: error }, "Incremental database vacuum failed");
