@@ -132,23 +132,39 @@ function coolingEligibilitySql(
     )`;
 }
 
+export interface ThreadHistoryCoolingCandidatePage {
+  nextCursor: number | null;
+  threadIds: string[];
+}
+
 export function listThreadHistoryCoolingCandidates(
   db: DbQueryConnection,
-  args: ThreadHistoryCoolingCriteria & { limit: number },
-): string[] {
-  if (args.archivedBefore === null && args.idleBefore === null) return [];
-  return db
+  args: ThreadHistoryCoolingCriteria & { afterCursor: number; scanLimit: number },
+): ThreadHistoryCoolingCandidatePage {
+  if (args.archivedBefore === null && args.idleBefore === null) {
+    return { nextCursor: null, threadIds: [] };
+  }
+  const page = db.get<{ lastRowid: number | null }>(sql`
+    SELECT max(rowid) AS lastRowid FROM (
+      SELECT rowid FROM threads WHERE rowid > ${args.afterCursor}
+      ORDER BY rowid LIMIT ${args.scanLimit}
+    )
+  `);
+  const lastRowid = page?.lastRowid ?? null;
+  if (lastRowid === null) return { nextCursor: null, threadIds: [] };
+  const threadIds = db
     .all<{ threadId: string }>(
       sql`
         SELECT t.id AS threadId
         FROM threads t
         LEFT JOIN thread_history_archives a ON a.thread_id = t.id
-        WHERE ${coolingEligibilitySql(args, ["hot"])}
-        ORDER BY coalesce(t.archived_at, t.updated_at), t.id
-        LIMIT ${args.limit}
+        WHERE t.rowid > ${args.afterCursor} AND t.rowid <= ${lastRowid}
+          AND ${coolingEligibilitySql(args, ["hot"])}
+        ORDER BY t.rowid
       `,
     )
     .map((row) => row.threadId);
+  return { nextCursor: lastRowid, threadIds };
 }
 
 export function isThreadHistoryCoolable(
@@ -304,14 +320,15 @@ const coldWindowSql = (args: ThreadHistoryWindowArgs) => sql`
   LIMIT ${args.maxRows}
 `;
 
-function takeWithinBytes<T extends { data: string }>(
+function takeWithinBytes<T>(
   rows: readonly T[],
+  sizeOf: (row: T) => number,
   maxBytes: number,
 ): { bytes: number; rows: T[] } {
   const taken: T[] = [];
   let bytes = 0;
   for (const row of rows) {
-    const rowBytes = Buffer.byteLength(row.data);
+    const rowBytes = sizeOf(row);
     if (taken.length > 0 && bytes + rowBytes > maxBytes) break;
     taken.push(row);
     bytes += rowBytes;
@@ -348,6 +365,7 @@ export function readThreadHistoryColdWindow(
 ): ThreadHistoryColdWindow {
   const { bytes, rows } = takeWithinBytes(
     db.all<ThreadHistoryEventRow>(coldWindowSql(args)),
+    (row) => Buffer.byteLength(row.data),
     args.maxBytes,
   );
   return {
@@ -365,9 +383,9 @@ export function deleteThreadHistoryColdWindow(
   db: DbQueryConnection,
   args: ThreadHistoryWindowArgs,
 ): ThreadHistoryDeleteResult {
-  const candidates = db.all<{ data: string; id: string; sequence: number }>(
+  const candidates = db.all<{ bytes: number; id: string; sequence: number }>(
     sql`
-      SELECT id, sequence, data FROM events
+      SELECT id, sequence, octet_length(data) AS bytes FROM events
       WHERE thread_id = ${args.threadId}
         AND sequence > ${args.afterSequence}
         AND sequence < ${args.beforeSequence}
@@ -376,7 +394,11 @@ export function deleteThreadHistoryColdWindow(
       LIMIT ${args.maxRows}
     `,
   );
-  const { bytes, rows } = takeWithinBytes(candidates, args.maxBytes);
+  const { bytes, rows } = takeWithinBytes(
+    candidates,
+    (row) => row.bytes,
+    args.maxBytes,
+  );
   if (rows.length === 0) {
     return { bytes: 0, deleted: 0, lastSequence: null };
   }

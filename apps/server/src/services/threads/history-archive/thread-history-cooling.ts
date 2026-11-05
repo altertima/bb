@@ -44,18 +44,26 @@ const BUSY_REST_FACTOR = 9;
 const IDLE_REST_FACTOR = 1;
 const IDLE_POLL_MS = 60_000;
 const ORPHAN_SWEEP_INTERVAL_MS = 10 * 60_000;
-const EXPORT_MAX_ROWS = 250;
-const EXPORT_MAX_BYTES = 256 * 1024;
+const EXPORT_MAX_ROWS = 128;
+const EXPORT_MAX_BYTES = 128 * 1024;
 const DELETE_MAX_ROWS = 64;
 const DELETE_MAX_BYTES = 512 * 1024;
-const CANDIDATE_BATCH = 20;
+const CANDIDATE_SCAN_THREADS = 256;
 const VACUUM_FREELIST_THRESHOLD_PAGES = 16_384;
 const VACUUM_TARGET_MS = 6;
 const VACUUM_MIN_PAGES = 8;
 const VACUUM_MAX_PAGES = 256;
+const STEP_COST_SMOOTHING = 0.2;
 const DAY_MS = 86_400_000;
 
 type StepOutcome = "worked" | "idle";
+
+type CandidatePick =
+  | { kind: "exhausted" }
+  | { kind: "scanned" }
+  | { kind: "thread"; threadId: string };
+
+export type ThreadHistoryStepKind = "pick" | "vacuum" | CoolingTask["kind"];
 
 interface ExportTask {
   coldBeforeSequence: number;
@@ -118,6 +126,9 @@ function forcedCriteria(now: number): ThreadHistoryCoolingCriteria {
 export class ThreadHistoryCoolingJob {
   private task: CoolingTask | null = null;
   private forced: ForcedCooling[] = [];
+  private candidates: string[] = [];
+  private candidateCursor = 0;
+  private scanPausedUntil = 0;
   private vacuumPages = 32;
 
   constructor(private readonly deps: ThreadHistoryCoolingDeps) {}
@@ -128,14 +139,26 @@ export class ThreadHistoryCoolingJob {
     });
   }
 
+  nextStepKind(): ThreadHistoryStepKind {
+    if (this.task !== null) return this.task.kind;
+    return this.forced.length > 0 ||
+      this.candidates.length > 0 ||
+      Date.now() >= this.scanPausedUntil
+      ? "pick"
+      : "vacuum";
+  }
+
   hasPendingWork(): boolean {
     return this.task !== null || this.forced.length > 0;
   }
 
   async step(): Promise<StepOutcome> {
     if (this.task === null) {
-      const started = await this.startNextTask();
-      if (started) return "worked";
+      const picked = this.pickCandidate();
+      if (picked.kind === "scanned") return "worked";
+      if (picked.kind === "thread" && (await this.startTask(picked.threadId))) {
+        return "worked";
+      }
       return this.vacuumStep();
     }
     switch (this.task.kind) {
@@ -189,12 +212,14 @@ export class ThreadHistoryCoolingJob {
     this.forced = remaining;
   }
 
-  private pickCandidate(): string | null {
+  private pickCandidate(): CandidatePick {
     const now = Date.now();
     while (this.forced.length > 0) {
       const forced = this.forced[0];
       if (forced === undefined) break;
-      if (this.isStillCoolable(forced.threadId)) return forced.threadId;
+      if (this.isStillCoolable(forced.threadId)) {
+        return { kind: "thread", threadId: forced.threadId };
+      }
       this.settleForced(
         forced.threadId,
         new Error(
@@ -202,21 +227,29 @@ export class ThreadHistoryCoolingJob {
         ),
       );
     }
-    const candidates = listThreadHistoryCoolingCandidates(this.deps.db, {
-      ...threadHistoryCoolingCriteria(getAppSettings(this.deps.db), now),
-      limit: CANDIDATE_BATCH,
+    while (this.candidates.length > 0) {
+      const threadId = this.candidates.shift();
+      if (threadId !== undefined && this.isStillCoolable(threadId)) {
+        return { kind: "thread", threadId };
+      }
+    }
+    if (now < this.scanPausedUntil) return { kind: "exhausted" };
+    const criteria = threadHistoryCoolingCriteria(getAppSettings(this.deps.db), now);
+    if (criteria.archivedBefore === null && criteria.idleBefore === null) {
+      return { kind: "exhausted" };
+    }
+    const page = listThreadHistoryCoolingCandidates(this.deps.db, {
+      ...criteria,
+      afterCursor: this.candidateCursor,
+      scanLimit: CANDIDATE_SCAN_THREADS,
     });
-    return (
-      candidates.find(
-        (threadId) =>
-          this.deps.hub.listThreadTimelineTags(threadId).size === 0,
-      ) ?? null
-    );
+    this.candidateCursor = page.nextCursor ?? 0;
+    this.candidates = page.threadIds;
+    if (page.nextCursor === null) this.scanPausedUntil = now + IDLE_POLL_MS;
+    return { kind: page.nextCursor === null ? "exhausted" : "scanned" };
   }
 
-  private async startNextTask(): Promise<boolean> {
-    const threadId = this.pickCandidate();
-    if (threadId === null) return false;
+  private async startTask(threadId: string): Promise<boolean> {
     const thread = getThread(this.deps.db, threadId);
     if (thread === null) return false;
     const now = Date.now();
@@ -313,7 +346,7 @@ export class ThreadHistoryCoolingJob {
     task.writer.addWindow(window.rows, window.retained);
     task.cursorSequence = window.lastSequence;
     if (task.writer.pendingRawBytes >= THREAD_HISTORY_FRAME_RAW_BYTES) {
-      await task.writer.flushFrame();
+      await task.writer.flushFrameInBackground();
     }
     return "worked";
   }
@@ -449,6 +482,24 @@ export class ThreadHistoryCoolingJob {
   }
 }
 
+class StepCostEstimates {
+  private readonly costs = new Map<ThreadHistoryStepKind, number>();
+
+  record(kind: ThreadHistoryStepKind, ms: number): void {
+    const previous = this.costs.get(kind);
+    this.costs.set(
+      kind,
+      previous === undefined
+        ? ms
+        : previous + STEP_COST_SMOOTHING * (ms - previous),
+    );
+  }
+
+  estimate(kind: ThreadHistoryStepKind): number {
+    return this.costs.get(kind) ?? 0;
+  }
+}
+
 export interface ThreadHistoryMaintenance {
   coolNow(threadId: string): Promise<void>;
   stop(): Promise<void>;
@@ -470,6 +521,7 @@ export function startThreadHistoryMaintenance(
   options: { isFrozen(): boolean },
 ): ThreadHistoryMaintenance {
   const job = new ThreadHistoryCoolingJob(deps);
+  const stepCosts = new StepCostEstimates();
   let timer: ReturnType<typeof setTimeout> | null = null;
   let stopped = false;
   let running = false;
@@ -495,11 +547,15 @@ export function startThreadHistoryMaintenance(
     let outcome: StepOutcome = "idle";
     try {
       do {
+        const kind = job.nextStepKind();
+        const stepStartedAt = performance.now();
         outcome = await job.step();
+        stepCosts.record(kind, performance.now() - stepStartedAt);
       } while (
         outcome === "worked" &&
         !stopped &&
-        performance.now() - startedAt < THREAD_HISTORY_SLICE_MS
+        performance.now() - startedAt + stepCosts.estimate(job.nextStepKind()) <=
+          THREAD_HISTORY_SLICE_MS
       );
       if (
         outcome === "idle" &&

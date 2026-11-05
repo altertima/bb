@@ -130,15 +130,42 @@ describe("thread history cooling eligibility", () => {
     const context = setup();
     const thread = seedThread(context);
     expect(
-      listThreadHistoryCoolingCandidates(context.db, { ...criteria(), limit: 10 }),
+      listThreadHistoryCoolingCandidates(context.db, {
+        ...criteria(),
+        afterCursor: 0,
+        scanLimit: 10,
+      }).threadIds,
     ).toEqual([thread.id]);
     expect(
       listThreadHistoryCoolingCandidates(context.db, {
         archivedBefore: null,
         idleBefore: null,
-        limit: 10,
-      }),
+        afterCursor: 0,
+        scanLimit: 10,
+      }).threadIds,
     ).toEqual([]);
+  });
+
+  it("pages through threads past ineligible ones and ends the pass", () => {
+    const context = setup();
+    const first = seedThread(context);
+    seedThread(context, { archived: false });
+    const last = seedThread(context);
+    const page = (afterCursor: number) =>
+      listThreadHistoryCoolingCandidates(context.db, {
+        ...criteria(),
+        afterCursor,
+        scanLimit: 2,
+      });
+    const firstPage = page(0);
+    expect(firstPage.threadIds).toEqual([first.id]);
+    expect(firstPage.nextCursor).not.toBeNull();
+    const secondPage = page(firstPage.nextCursor ?? 0);
+    expect(secondPage.threadIds).toEqual([last.id]);
+    expect(page(secondPage.nextCursor ?? 0)).toEqual({
+      nextCursor: null,
+      threadIds: [],
+    });
   });
 
   it("skips live threads unless the idle rule covers them", () => {

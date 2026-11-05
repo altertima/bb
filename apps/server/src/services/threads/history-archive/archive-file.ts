@@ -142,6 +142,7 @@ export class ThreadHistoryArchiveWriter {
   private offset = 0;
   private totalRows = 0;
   private totalRawBytes = 0;
+  private flushing: Promise<void> = Promise.resolve();
 
   private constructor(
     private readonly handle: FileHandle,
@@ -210,6 +211,17 @@ export class ThreadHistoryArchiveWriter {
   }
 
   async flushFrame(): Promise<void> {
+    await this.flushing;
+    this.startFlush();
+    await this.flushing;
+  }
+
+  async flushFrameInBackground(): Promise<void> {
+    await this.flushing;
+    this.startFlush();
+  }
+
+  private startFlush(): void {
     if (this.pendingLines.length === 0) return;
     const raw = Buffer.from(`${this.pendingLines.join("\n")}\n`);
     const firstSequence = this.pendingFirst ?? 0;
@@ -220,22 +232,33 @@ export class ThreadHistoryArchiveWriter {
     this.pendingRows = 0;
     this.pendingFirst = null;
     this.pendingLast = null;
-    const frame = await zstdCompress(raw, {
+    const flushing = this.writeFrame({ firstSequence, lastSequence, raw, rows });
+    flushing.catch(() => undefined);
+    this.flushing = flushing;
+  }
+
+  private async writeFrame(args: {
+    firstSequence: number;
+    lastSequence: number;
+    raw: Buffer;
+    rows: number;
+  }): Promise<void> {
+    const frame = await zstdCompress(args.raw, {
       params: { [zlib.constants.ZSTD_c_compressionLevel]: ZSTD_LEVEL },
     });
     const offset = this.offset;
     await this.write(frame);
     this.frames.push({
       compressedBytes: frame.length,
-      firstSequence,
-      lastSequence,
+      firstSequence: args.firstSequence,
+      lastSequence: args.lastSequence,
       offset,
-      rawBytes: raw.length,
-      rows,
+      rawBytes: args.raw.length,
+      rows: args.rows,
       sha256: createHash("sha256").update(frame).digest("hex"),
     });
-    this.totalRows += rows;
-    this.totalRawBytes += raw.length;
+    this.totalRows += args.rows;
+    this.totalRawBytes += args.raw.length;
   }
 
   async seal(): Promise<{ packedBytes: number; rawBytes: number; rows: number }> {
@@ -267,6 +290,7 @@ export class ThreadHistoryArchiveWriter {
   }
 
   async abort(): Promise<void> {
+    await this.flushing.catch(() => undefined);
     await this.handle.close().catch(() => undefined);
     await rm(this.tempPath, { force: true });
   }
