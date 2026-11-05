@@ -191,6 +191,9 @@ Use `--selected-model <model-id>` to discover its reasoning choices and include 
 - `bb thread archive`
 - `bb thread unarchive`
 - `bb thread restore-environment`
+- `bb thread history-archive status`
+- `bb thread history-archive cool`
+- `bb thread history-archive restore`
 - `bb thread pin`
 - `bb thread unpin`
 - `bb thread regenerate-title`

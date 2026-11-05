@@ -1159,6 +1159,29 @@ Docs: `backend-sdk.md`.
 3. **Actions.** Confirm `archive` and `delete` are the only cascading
    actions worth previewing.
 
+## `bb.sdk.threads.experimental_history` / `experimental_coolHistory` / `experimental_restoreHistory`
+
+`GET /threads/:id/history` reports whether a thread's event history is `hot`
+(in `bb.db`) or `cold` (moved by the cold-history tier into
+`<data dir>/archive/threads/<thread id>.jsonl.zst`), with the archived row count
+and file size. `POST /threads/:id/history/cool` moves the history now instead of
+after `coldHistoryAfterArchivedDays` / `coldHistoryAfterIdleDays`, and answers
+409 while the thread is running, pinned, has pending interactions, queued
+messages or background tasks, or is open in a client.
+`POST /threads/:id/history/restore` restores it now. Every other thread read
+and write restores a cold thread first, so callers never need these to see a
+thread's events. Core callers: `bb thread history-archive status|cool|restore`,
+and the same restore path that the timeline, events, output, message, context,
+outline, turn-details, unarchive, send, edit, fork, clear and compact paths
+call before reading events.
+
+Stabilization: confirm the response shape covers what the Storage page needs
+(archive size per thread), run one release with the tier on by default without
+restore failures in telemetry or bug reports, then rename project-wide and drop
+this entry.
+
+Docs: `bb guide thread-lifecycle`, `bb guide customization`.
+
 ## `bb.sdk.threads.experimental_regenerateTitle`
 
 `POST /threads/:id/title/regenerate` asks the thread-title AI service for a new

@@ -314,6 +314,11 @@ export function registerSystemRoutes(
         settings.idleProviderSessionTimeoutMinutes === undefined
           ? current.idleProviderSessionTimeoutMinutes
           : settings.idleProviderSessionTimeoutMinutes,
+      coldHistoryAfterArchivedDays:
+        settings.coldHistoryAfterArchivedDays ??
+        current.coldHistoryAfterArchivedDays,
+      coldHistoryAfterIdleDays:
+        settings.coldHistoryAfterIdleDays ?? current.coldHistoryAfterIdleDays,
       allowFastServiceTier:
         settings.allowFastServiceTier ?? current.allowFastServiceTier,
       telemetryEnabled: settings.telemetryEnabled ?? current.telemetryEnabled,

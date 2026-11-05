@@ -895,6 +895,33 @@ export const retainedEventOutputs = sqliteTable(
   ],
 );
 
+export type ThreadHistoryArchiveState =
+  | "exporting"
+  | "cooling"
+  | "cold"
+  | "restoring"
+  | "hot";
+
+export const threadHistoryArchives = sqliteTable(
+  "thread_history_archives",
+  {
+    threadId: text("thread_id")
+      .primaryKey()
+      .references(() => threads.id, { onDelete: "cascade" }),
+    state: text("state").$type<ThreadHistoryArchiveState>().notNull(),
+    formatVersion: integer("format_version").notNull(),
+    coldBeforeSequence: integer("cold_before_sequence").notNull(),
+    cursorSequence: integer("cursor_sequence").notNull(),
+    rowCount: integer("row_count").notNull(),
+    rawBytes: integer("raw_bytes").notNull(),
+    packedBytes: integer("packed_bytes").notNull(),
+    coldAt: integer("cold_at"),
+    restoredAt: integer("restored_at"),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (table) => [index("thread_history_archives_state_idx").on(table.state)],
+);
+
 export const threadPruningCursors = sqliteTable(
   "thread_pruning_cursors",
   {

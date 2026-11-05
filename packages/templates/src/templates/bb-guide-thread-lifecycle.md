@@ -98,6 +98,22 @@ Lifecycle:
   bb thread unarchive [id]                 Unarchive a thread
     --self                                 Unarchive current thread
 
+  bb thread history-archive status [id]    Show where the thread's history lives
+  bb thread history-archive cool [id]      Move the history to the archive now
+  bb thread history-archive restore [id]   Restore archived history now
+    --self                                 Target current thread
+    --json                                 Print the history status as JSON
+
+  bb keeps recent threads' history in its database and moves the history of
+  threads archived for `coldHistoryAfterArchivedDays` (default 3) or inactive
+  for `coldHistoryAfterIdleDays` (default 30) into compressed files under
+  `<data dir>/archive/threads/`. Reading or writing a thread restores it first,
+  so `bb thread log`, `bb thread output`, sending, and unarchiving behave the
+  same either way. `cool` refuses while the thread is running, pinned, has
+  pending work, or is open in a client. Unarchiving restores the history and
+  deletes the file. The files are JSONL under zstd: `zstdcat <file> | jq` and
+  `rg -z` read them without bb.
+
   bb thread restore-environment [id]       Restore a destroyed workspace
     --self                                 Restore current thread
 

@@ -1829,6 +1829,8 @@ describe("migrate", () => {
         telemetryEnabled: true,
         managedBranchPrefix: "bb/",
         idleProviderSessionTimeoutMinutes: 30,
+        coldHistoryAfterArchivedDays: 3,
+        coldHistoryAfterIdleDays: 30,
         onboardingCompletedAt: "2026-08-01T00:00:00.000Z",
         earlyAdopter: false,
       });

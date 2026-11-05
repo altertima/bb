@@ -230,6 +230,7 @@ import {
   type TerminalOutputResponse,
   type TerminalResizeRequest,
   type ThreadArchiveAllResponse,
+  type ThreadHistoryResponse,
   type ThreadChildSummaryResponse,
   type ThreadEventWaitQuery,
   type ThreadEventsQuery,
@@ -1683,6 +1684,33 @@ export const publicApiRoutes = {
       method: "post",
       request: noRequest<PathId>(),
       response: jsonResponse<{ ok: true }>(),
+    }),
+    /** Where the thread's event history lives; see `ThreadHistoryResponse`. */
+    history: defineRoute({
+      path: "/threads/:id/history",
+      method: "get",
+      request: noRequest<PathId>(),
+      response: jsonResponse<ThreadHistoryResponse>(),
+    }),
+    /**
+     * Move the thread's event history to the archive now, without waiting for
+     * the `coldHistoryAfterArchivedDays` / `coldHistoryAfterIdleDays` delay.
+     * Refused (409) while the thread is running, pinned, has pending
+     * interactions, queued messages or background tasks, or is open in a
+     * client. Answers once the history is cold.
+     */
+    coolHistory: defineRoute({
+      path: "/threads/:id/history/cool",
+      method: "post",
+      request: noRequest<PathId>(),
+      response: jsonResponse<ThreadHistoryResponse>(),
+    }),
+    /** Restore the thread's archived history into the database now. */
+    restoreHistory: defineRoute({
+      path: "/threads/:id/history/restore",
+      method: "post",
+      request: noRequest<PathId>(),
+      response: jsonResponse<ThreadHistoryResponse>(),
     }),
     /**
      * Ask the environment provider to restore a thread's destroyed environment

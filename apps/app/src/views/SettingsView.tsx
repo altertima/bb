@@ -1434,7 +1434,15 @@ export function SettingsView() {
   } else if (activeSection === "community") {
     content = <CommunitySettingsSection />;
   } else if (activeSection === "archived") {
-    content = <ArchivedThreadsSettingsSection />;
+    content = (
+      <ArchivedThreadsSettingsSection
+        disabled={systemConfigQuery.data === undefined}
+        generalSettings={generalSettings}
+        onGeneralSettingsChange={(next) =>
+          updateGeneralSettingsMutation.mutateAsync(next)
+        }
+      />
+    );
   } else {
     content = (
       <>

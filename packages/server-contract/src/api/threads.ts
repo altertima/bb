@@ -908,6 +908,22 @@ export type ThreadPaneActionResponse = z.infer<
   typeof threadPaneActionResponseSchema
 >;
 
+/**
+ * Where a thread's event history lives. `cold` means bb moved the history of
+ * this archived or long-idle thread into a compressed file under the data
+ * directory; any read or write restores it first, so callers see the same
+ * events either way. `archivedRows` and `packedBytes` describe the file and are
+ * 0 while the history is hot.
+ */
+export const threadHistoryResponseSchema = z.object({
+  threadId: z.string().min(1),
+  storage: z.enum(["hot", "cold"]),
+  archivedRows: z.number().int().nonnegative(),
+  packedBytes: z.number().int().nonnegative(),
+  coldAt: z.number().int().nullable(),
+});
+export type ThreadHistoryResponse = z.infer<typeof threadHistoryResponseSchema>;
+
 export const threadArchiveAllResponseSchema = z.object({
   ok: z.literal(true),
   archivedThreadIds: z.array(z.string().min(1)),

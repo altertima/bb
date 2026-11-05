@@ -1,6 +1,16 @@
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import type { ThreadListEntry } from "@bb/domain";
+import {
+  COLD_HISTORY_AFTER_ARCHIVED_DAYS,
+  COLD_HISTORY_AFTER_IDLE_DAYS,
+  defaultAppSettings,
+  type AppSettings,
+  type ThreadListEntry,
+} from "@bb/domain";
+import {
+  ChoiceDropdownSetting,
+  type ChoiceDropdownOption,
+} from "./ChoiceDropdownSetting";
 import { Button } from "@bb/shared-ui/button";
 import { ProjectSelector } from "@/components/pickers/ProjectSelector";
 import {
@@ -106,7 +116,125 @@ function filterArchivedThreadsBySearch(
   });
 }
 
-export function ArchivedThreadsSettingsSection() {
+function dayCount(days: number): string {
+  return days === 1 ? "1 day" : `${days} days`;
+}
+
+const NEVER_HISTORY_OPTION: ChoiceDropdownOption = {
+  key: "never",
+  title: "Never",
+  description: "Keep this history in the database.",
+};
+
+function historyArchiveOptions(
+  values: readonly number[],
+  defaultValue: number | "never",
+  describe: (days: number) => string,
+): ChoiceDropdownOption[] {
+  return [
+    ...values.map((days) => ({
+      key: String(days),
+      title: `After ${dayCount(days)}${days === defaultValue ? " (default)" : ""}`,
+      description: describe(days),
+    })),
+    NEVER_HISTORY_OPTION,
+  ];
+}
+
+const ARCHIVED_HISTORY_OPTIONS = historyArchiveOptions(
+  COLD_HISTORY_AFTER_ARCHIVED_DAYS,
+  defaultAppSettings.coldHistoryAfterArchivedDays,
+  (days) => `Move a thread's history once it has been archived ${dayCount(days)}.`,
+);
+
+const IDLE_HISTORY_OPTIONS = historyArchiveOptions(
+  COLD_HISTORY_AFTER_IDLE_DAYS,
+  defaultAppSettings.coldHistoryAfterIdleDays,
+  (days) => `Move a thread's history after ${dayCount(days)} without activity.`,
+);
+
+function selectedHistoryOption(
+  options: readonly ChoiceDropdownOption[],
+  value: number | "never",
+): ChoiceDropdownOption {
+  return (
+    options.find((option) => option.key === String(value)) ??
+    NEVER_HISTORY_OPTION
+  );
+}
+
+function parseArchivedHistoryChoice(
+  key: string,
+): AppSettings["coldHistoryAfterArchivedDays"] | null {
+  if (key === "never") return "never";
+  return (
+    COLD_HISTORY_AFTER_ARCHIVED_DAYS.find((days) => String(days) === key) ?? null
+  );
+}
+
+function parseIdleHistoryChoice(
+  key: string,
+): AppSettings["coldHistoryAfterIdleDays"] | null {
+  if (key === "never") return "never";
+  return COLD_HISTORY_AFTER_IDLE_DAYS.find((days) => String(days) === key) ?? null;
+}
+
+interface ArchivedThreadsSettingsSectionProps {
+  disabled: boolean;
+  generalSettings: AppSettings;
+  onGeneralSettingsChange: (
+    patch: Partial<AppSettings>,
+  ) => Promise<unknown> | void;
+}
+
+function HistoryArchiveSettings({
+  disabled,
+  generalSettings,
+  onGeneralSettingsChange,
+}: ArchivedThreadsSettingsSectionProps) {
+  return (
+    <div className="space-y-1">
+      <ChoiceDropdownSetting
+        label="Archive history of archived threads"
+        description="Move the event history of threads archived this long into compressed files beside the database. Nothing is lost: opening a thread restores its history first."
+        triggerAriaLabel="Archive history of archived threads"
+        options={ARCHIVED_HISTORY_OPTIONS}
+        selected={selectedHistoryOption(
+          ARCHIVED_HISTORY_OPTIONS,
+          generalSettings.coldHistoryAfterArchivedDays,
+        )}
+        disabled={disabled}
+        onSelect={(key) => {
+          const value = parseArchivedHistoryChoice(key);
+          if (value !== null)
+            void onGeneralSettingsChange({ coldHistoryAfterArchivedDays: value });
+        }}
+      />
+      <ChoiceDropdownSetting
+        label="Archive history of inactive threads"
+        description="Do the same for threads that are not archived but have had no activity this long. Pinned threads always stay in the database."
+        triggerAriaLabel="Archive history of inactive threads"
+        options={IDLE_HISTORY_OPTIONS}
+        selected={selectedHistoryOption(
+          IDLE_HISTORY_OPTIONS,
+          generalSettings.coldHistoryAfterIdleDays,
+        )}
+        disabled={disabled}
+        onSelect={(key) => {
+          const value = parseIdleHistoryChoice(key);
+          if (value !== null)
+            void onGeneralSettingsChange({ coldHistoryAfterIdleDays: value });
+        }}
+      />
+    </div>
+  );
+}
+
+export function ArchivedThreadsSettingsSection({
+  disabled,
+  generalSettings,
+  onGeneralSettingsChange,
+}: ArchivedThreadsSettingsSectionProps) {
   const [search, setSearch] = useState("");
   const [kind, setKind] = useState<ArchivedThreadsKindFilter>("all");
   const [projectId, setProjectId] = useState(ALL_PROJECTS);
@@ -192,6 +320,12 @@ export function ArchivedThreadsSettingsSection() {
           Find and restore archived threads from across your projects.
         </p>
       </div>
+
+      <HistoryArchiveSettings
+        disabled={disabled}
+        generalSettings={generalSettings}
+        onGeneralSettingsChange={onGeneralSettingsChange}
+      />
 
       <div className="flex flex-wrap items-center gap-2">
         <div className="relative min-w-56 flex-1">

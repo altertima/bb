@@ -1,3 +1,4 @@
+import { ensureThreadHistoryHot } from "./history-archive/thread-history.js";
 import {
   getEnvironment,
   getThread,
@@ -488,6 +489,7 @@ export async function sendThreadMessage(
   deps: LoggedPendingInteractionWorkSessionDeps,
   args: SendThreadMessageArgs,
 ): Promise<void> {
+  await ensureThreadHistoryHot(deps, args.thread.id);
   if (isStandaloneBuiltinClearCommand(args.payload.input)) {
     await clearThreadContext(deps, {
       ...(args.beforeAppendInTransaction !== undefined

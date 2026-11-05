@@ -330,6 +330,20 @@ function ExperimentsStory() {
   );
 }
 
+function ArchivedThreadsSettingsStory() {
+  const [generalSettings, setGeneralSettings] =
+    useState<AppSettings>(defaultAppSettings);
+  return (
+    <ArchivedThreadsSettingsSection
+      disabled={false}
+      generalSettings={generalSettings}
+      onGeneralSettingsChange={(patch) =>
+        setGeneralSettings((current) => ({ ...current, ...patch }))
+      }
+    />
+  );
+}
+
 function ProvidersSettingsStory() {
   const [generalSettings, setGeneralSettings] =
     useState<AppSettings>(defaultAppSettings);
@@ -394,7 +408,7 @@ function SettingsStoryContent({ route }: { route: SettingsStoryRoute }) {
     case "community":
       return <CommunitySettingsSection />;
     case "archived":
-      return <ArchivedThreadsSettingsSection />;
+      return <ArchivedThreadsSettingsStory />;
     case "general":
       return (
         <>

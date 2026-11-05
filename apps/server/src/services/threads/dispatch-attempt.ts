@@ -1,3 +1,4 @@
+import { ensureThreadHistoryHot } from "./history-archive/thread-history.js";
 import {
   requestQueuedMachineReadiness,
   requestQueuedMessageDispatch,
@@ -1019,6 +1020,7 @@ export async function compactThreadContext(
   thread: Thread,
 ): Promise<void> {
   ensureThreadIsWritable(thread);
+  await ensureThreadHistoryHot(deps, thread.id);
   if (!deps.providerRegistry.supportsManualCompaction(thread.providerId)) {
     throw new ApiError(
       409,

@@ -67,6 +67,10 @@ import { TerminalSessionLifecycle } from "./services/terminals/terminal-session-
 import { createLifecycleDedupers } from "./lifecycle-dedupers.js";
 import type { ServerLogger, ServerRuntimeConfig } from "./types.js";
 import { NotificationHub } from "./ws/hub.js";
+import {
+  startThreadHistoryMaintenance,
+  type ThreadHistoryMaintenance,
+} from "./services/threads/history-archive/thread-history-cooling.js";
 import { startDaemonLivenessChecks } from "./ws/daemon-protocol.js";
 import { WatchInterestCoordinator } from "./ws/watch-interests.js";
 import { HostSharedPortCoordinator } from "./ws/host-shared-ports.js";
@@ -508,6 +512,7 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
     baseUrl: `http://127.0.0.1:${serverConfig.BB_SERVER_PORT}`,
   });
   let sweepInterval: ReturnType<typeof setInterval> | null = null;
+  let threadHistoryMaintenance: ThreadHistoryMaintenance | null = null;
   if (pendingServerMove === null) {
     telemetry.capture({ name: "app_started" });
     if (serverMoveRun?.kind === "completed") {
@@ -533,6 +538,9 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
       }
     }, 10_000);
     sweepInterval.unref();
+    threadHistoryMaintenance = startThreadHistoryMaintenance(sweepDeps, {
+      isFrozen: () => isServerMoveFrozen(db),
+    });
   } else {
     logger.info(
       { moveId: pendingServerMove.moveId },
@@ -557,6 +565,7 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
       if (sweepInterval !== null) {
         clearInterval(sweepInterval);
       }
+      await threadHistoryMaintenance?.stop();
       pluginCatalogService.stopPeriodicRefresh();
       await pluginService.stopPeriodicUpdateChecks();
       if (pendingServerMove === null) {

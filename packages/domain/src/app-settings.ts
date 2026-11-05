@@ -14,6 +14,26 @@ export const idleProviderSessionTimeoutMinutesSchema = z.literal(
   IDLE_PROVIDER_SESSION_TIMEOUT_MINUTES,
 );
 
+export const COLD_HISTORY_AFTER_ARCHIVED_DAYS = [1, 3, 7, 14, 30] as const;
+
+export const coldHistoryAfterArchivedDaysSchema = z.union([
+  z.literal(COLD_HISTORY_AFTER_ARCHIVED_DAYS),
+  z.literal("never"),
+]);
+export type ColdHistoryAfterArchivedDays = z.infer<
+  typeof coldHistoryAfterArchivedDaysSchema
+>;
+
+export const COLD_HISTORY_AFTER_IDLE_DAYS = [7, 14, 30, 60, 90] as const;
+
+export const coldHistoryAfterIdleDaysSchema = z.union([
+  z.literal(COLD_HISTORY_AFTER_IDLE_DAYS),
+  z.literal("never"),
+]);
+export type ColdHistoryAfterIdleDays = z.infer<
+  typeof coldHistoryAfterIdleDaysSchema
+>;
+
 export const managedBranchPrefixSchema = z
   .string()
   .max(MANAGED_BRANCH_PREFIX_MAX_LENGTH)
@@ -41,6 +61,8 @@ export const appSettingsSchema = z
     telemetryEnabled: z.boolean(),
     managedBranchPrefix: managedBranchPrefixSchema,
     idleProviderSessionTimeoutMinutes: idleProviderSessionTimeoutMinutesSchema,
+    coldHistoryAfterArchivedDays: coldHistoryAfterArchivedDaysSchema,
+    coldHistoryAfterIdleDays: coldHistoryAfterIdleDaysSchema,
     machineServerUrl: z
       .string()
       .url()
@@ -77,6 +99,8 @@ export const defaultAppSettings: AppSettings = {
   telemetryEnabled: true,
   managedBranchPrefix: DEFAULT_MANAGED_BRANCH_PREFIX,
   idleProviderSessionTimeoutMinutes: 30,
+  coldHistoryAfterArchivedDays: 3,
+  coldHistoryAfterIdleDays: 30,
   machineServerUrl: null,
   defaultMachineAccess: null,
   machineGitCredentialsEnabled: true,
@@ -90,6 +114,8 @@ export const appSettingsUpdateSchema = z.union([
   appSettingsSchema.extend({
     idleProviderSessionTimeoutMinutes:
       idleProviderSessionTimeoutMinutesSchema.optional(),
+    coldHistoryAfterArchivedDays: coldHistoryAfterArchivedDaysSchema.optional(),
+    coldHistoryAfterIdleDays: coldHistoryAfterIdleDaysSchema.optional(),
     terminalCopyOnSelect: z.boolean().optional(),
     allowFastServiceTier: z.boolean().optional(),
     telemetryEnabled: z.boolean().optional(),
@@ -103,6 +129,8 @@ export const appSettingsUpdateSchema = z.union([
   appSettingsSchema.omit({ showDiagnosticEvents: true }).extend({
     idleProviderSessionTimeoutMinutes:
       idleProviderSessionTimeoutMinutesSchema.optional(),
+    coldHistoryAfterArchivedDays: coldHistoryAfterArchivedDaysSchema.optional(),
+    coldHistoryAfterIdleDays: coldHistoryAfterIdleDaysSchema.optional(),
     terminalCopyOnSelect: z.boolean().optional(),
     allowFastServiceTier: z.boolean().optional(),
     telemetryEnabled: z.boolean().optional(),
