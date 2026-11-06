@@ -87,6 +87,18 @@ describe("complete workflow inventory", () => {
       expect(JSON.stringify(inventory)).not.toContain('"source":');
       expect(JSON.stringify(inventory)).not.toContain("NEVER-EXPOSE");
       expect(JSON.stringify(inventory)).not.toContain("PRIVATE-SPEC");
+      db.prepare("UPDATE workflow_runs SET args_json = '{' WHERE id = ?").run(
+        first.id,
+      );
+      expect(() =>
+        buildWorkflowInventory(listActiveRuns(db), DEFAULT_WORKFLOW_SETTINGS),
+      ).toThrow(`invalid args for ${first.id}`);
+      db.prepare(
+        "UPDATE workflow_runs SET args_json = 'null', settings_json = '{' WHERE id = ?",
+      ).run(first.id);
+      expect(() =>
+        buildWorkflowInventory(listActiveRuns(db), DEFAULT_WORKFLOW_SETTINGS),
+      ).toThrow(`invalid settings for ${first.id}`);
     } finally {
       db.close();
     }

@@ -26,10 +26,20 @@ const admissionArgsSchema = z.object({
     ),
   }),
 });
+function storedJson(text: string, runId: string, field: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new Error(
+      `Cannot establish complete workflow inventory: invalid ${field} for ${runId}`,
+    );
+  }
+}
 function admissionArgs(
   text: string,
+  runId: string,
 ): z.infer<typeof admissionArgsSchema> | null {
-  const result = admissionArgsSchema.safeParse(JSON.parse(text));
+  const result = admissionArgsSchema.safeParse(storedJson(text, runId, "args"));
   return result.success ? result.data : null;
 }
 
@@ -75,8 +85,10 @@ export function buildWorkflowInventory(
     environmentId: run.environmentId,
     name: run.name,
     sourceHash: run.sourceHash,
-    args: admissionArgs(run.argsJson),
-    settings: parseStoredWorkflowSettings(JSON.parse(run.settingsJson)),
+    args: admissionArgs(run.argsJson, run.id),
+    settings: parseStoredWorkflowSettings(
+      storedJson(run.settingsJson, run.id, "settings"),
+    ),
     status: run.status,
     createdAt: run.createdAt,
     startedAt: run.startedAt,

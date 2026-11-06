@@ -42,6 +42,9 @@ conditionally inserts a run only when the token still matches and the number of
 active and queued runs is below `maxActiveRuns`. Competing conditional starts
 with the same token cannot both succeed. This does not reserve environments or
 threads and cannot prevent a non-cooperating dispatcher from starting work.
+Malformed stored args/settings fail the entire snapshot explicitly with the run
+ID; inventory never drops an unknown run or substitutes current settings for its
+stored limits. Non-team args that are valid JSON yield null admission metadata.
 
 Detailed history can contain every prompt, critique, result, and call record,
 so never print it directly into the agent transcript. Materialize one bounded
