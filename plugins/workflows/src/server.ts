@@ -6,6 +6,7 @@ import {
 import type { BbPluginApi, PluginAgentToolResult } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { registerWorkflowCli } from "./cli.js";
+import { workflowInventoryContract } from "./inventory.js";
 import { migrations } from "./data.js";
 import { toJsonValue } from "./json-value.js";
 import { createWorkflowService } from "./service.js";
@@ -103,6 +104,13 @@ export default async function plugin(bb: BbPluginApi) {
       ),
   );
   registerWorkflowCli(bb, service);
+  bb.rpc.register(
+    workflowInventoryContract,
+    {
+      "workflows.v1.inventory": () => service.inventory(),
+    },
+    { experimental_discoverable: true },
+  );
   bb.rpc.register(
     retryConsentContract,
     {

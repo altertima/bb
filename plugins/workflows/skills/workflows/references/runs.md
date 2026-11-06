@@ -29,6 +29,16 @@ remains authoritative.
 `list` also returns compact summaries; it is safe for discovery but is not a
 substitute for the redirected detailed history.
 
+`bb workflows inventory --json` and discoverable RPC `workflows.v1.inventory`
+return a complete server-wide snapshot of queued and running workflows, including
+project, origin, environment, source hash, args, stored settings and current
+settings. Args can contain sensitive task material. The token changes when the
+snapshot or current settings change. `bb workflows run --inventory-token <token>`
+conditionally inserts a run only when the token still matches and the number of
+active and queued runs is below `maxActiveRuns`. Competing conditional starts
+with the same token cannot both succeed. This does not reserve environments or
+threads and cannot prevent a non-cooperating dispatcher from starting work.
+
 Detailed history can contain every prompt, critique, result, and call record,
 so never print it directly into the agent transcript. Materialize one bounded
 JSONL page on the execution host, then use normal file-navigation tools:

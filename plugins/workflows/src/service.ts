@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { buildWorkflowInventory, type WorkflowInventory } from "./inventory.js";
 import Ajv from "ajv";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
@@ -34,6 +35,7 @@ import {
   listExpiredTerminalRuns,
   listActiveRunsForOriginThread,
   listRuns,
+  listActiveRuns,
   listPendingNotificationRuns,
   listRunningCalls,
   listTimedOutRuns,
@@ -336,6 +338,7 @@ interface StartWorkflowInput {
   source: string;
   args: JsonValue;
   resumedFromRunId: string | null;
+  inventoryToken?: string;
 }
 
 export interface WorkflowService {
@@ -350,6 +353,7 @@ export interface WorkflowService {
   inspectLatestForThread(threadId: string): WorkflowRunInspection | null;
   inspectActiveForThread(threadId: string): WorkflowRunInspection[];
   list(projectId: string, limit: number): WorkflowRunRow[];
+  inventory(): WorkflowInventory;
   stop(runId: string): Promise<boolean>;
   updateSettings(settings: WorkflowSettings): void;
   runWorker(signal: AbortSignal): Promise<void>;
@@ -632,21 +636,39 @@ export function createWorkflowService(
         );
       }
     }
-    const created = createRun(db, {
-      projectId: input.projectId,
-      originThreadId: input.originThreadId,
-      environmentId: origin.environmentId,
-      originProvider: origin.providerId,
-      originModel: origin.model,
-      originReasoningLevel: origin.reasoningLevel,
-      originPermissionMode: origin.permissionMode,
-      name: parsed.metadata.name,
-      source: input.source,
-      sourceHash: createHash("sha256").update(input.source).digest("hex"),
-      argsJson: JSON.stringify(input.args),
-      settingsJson: JSON.stringify(currentSettings),
-      resumedFromRunId: input.resumedFromRunId,
-    });
+    const created = db
+      .transaction(() => {
+        if (input.inventoryToken !== undefined) {
+          const inventory = buildWorkflowInventory(
+            listActiveRuns(db),
+            currentSettings,
+          );
+          if (input.inventoryToken !== inventory.token) {
+            throw new Error(
+              "Workflow inventory changed; reconcile before retrying",
+            );
+          }
+          if (inventory.runs.length >= currentSettings.maxActiveRuns) {
+            throw new Error("Workflow admission capacity unavailable");
+          }
+        }
+        return createRun(db, {
+          projectId: input.projectId,
+          originThreadId: input.originThreadId,
+          environmentId: origin.environmentId,
+          originProvider: origin.providerId,
+          originModel: origin.model,
+          originReasoningLevel: origin.reasoningLevel,
+          originPermissionMode: origin.permissionMode,
+          name: parsed.metadata.name,
+          source: input.source,
+          sourceHash: createHash("sha256").update(input.source).digest("hex"),
+          argsJson: JSON.stringify(input.args),
+          settingsJson: JSON.stringify(currentSettings),
+          resumedFromRunId: input.resumedFromRunId,
+        });
+      })
+      .immediate();
     wakeWorker();
     publishRunsChanged(created.originThreadId);
     return created;
@@ -1741,6 +1763,8 @@ export function createWorkflowService(
     inspectLatestForThread,
     inspectActiveForThread,
     list: (projectId, limit) => listRuns(db, { projectId, limit }),
+    inventory: () =>
+      buildWorkflowInventory(listActiveRuns(db), currentSettings),
     stop,
     updateSettings(settings) {
       currentSettings = settings;

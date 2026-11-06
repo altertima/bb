@@ -1121,6 +1121,77 @@ describe("workflow service policy integration", () => {
     await worker;
   });
 
+  it("admits and executes two isolated runs concurrently while rejecting a third conditional start", async () => {
+    const test = setup({
+      ...DEFAULT_WORKFLOW_SETTINGS,
+      maxActiveRuns: 2,
+      maxConcurrentAgents: 1,
+      maxAgentCalls: 11,
+      totalRunTimeoutMs: 5_400_000,
+    });
+    harnesses.push(test.harness);
+    const owners: string[] = [];
+    test.harness.sdk.stub("threads.get", (async ({
+      threadId,
+    }: {
+      threadId: string;
+    }) => ({
+      id: threadId,
+      environmentId:
+        threadId === "origin-2" ? "environment-2" : "environment-1",
+      providerId: "codex",
+      status: "active",
+      archivedAt: null,
+    })) as never);
+    test.harness.sdk.stub("threads.spawn", (async ({
+      lifecycleOwnerThreadId,
+    }: {
+      lifecycleOwnerThreadId: string;
+    }) => {
+      owners.push(lifecycleOwnerThreadId);
+      return { id: `parallel-${owners.length}` };
+    }) as never);
+    const workflow = source('return await agent("one");', "two-teams");
+    const first = await test.start(workflow);
+    const second = await test.service.start({
+      projectId: "project-two",
+      originThreadId: "origin-2",
+      source: workflow,
+      args: null,
+      resumedFromRunId: null,
+      inventoryToken: test.service.inventory().token,
+    });
+    const controller = new AbortController();
+    const worker = test.service.runWorker(controller.signal);
+    try {
+      await eventually(() => expect(owners).toHaveLength(2));
+      expect(owners.sort()).toEqual(["origin", "origin-2"]);
+      expect(test.service.inventory().runs.map((run) => run.status)).toEqual([
+        "running",
+        "running",
+      ]);
+      await expect(
+        test.service.start({
+          projectId: "project-three",
+          originThreadId: "origin-3",
+          source: workflow,
+          args: null,
+          resumedFromRunId: null,
+          inventoryToken: test.service.inventory().token,
+        }),
+      ).rejects.toThrow("capacity unavailable");
+      test.service.onThreadIdle("parallel-1", "done");
+      test.service.onThreadIdle("parallel-2", "done");
+      await eventually(() => {
+        expect(getRunRequired(test.db, first.id).status).toBe("succeeded");
+        expect(getRunRequired(test.db, second.id).status).toBe("succeeded");
+      });
+    } finally {
+      controller.abort();
+      await worker;
+    }
+  });
+
   it("does not create or orphan a call when cancellation wins catalog or spawn", async () => {
     const catalogBlocked = setup();
     harnesses.push(catalogBlocked.harness);
