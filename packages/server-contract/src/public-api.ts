@@ -230,7 +230,8 @@ import {
   type TerminalOutputResponse,
   type TerminalResizeRequest,
   type ThreadArchiveAllResponse,
-  type ThreadHistoryResponse,
+  type ThreadImportForm,
+  type ThreadImportResponse,
   type ThreadChildSummaryResponse,
   type ThreadEventWaitQuery,
   type ThreadEventsQuery,
@@ -1685,32 +1686,29 @@ export const publicApiRoutes = {
       request: noRequest<PathId>(),
       response: jsonResponse<{ ok: true }>(),
     }),
-    /** Where the thread's event history lives; see `ThreadHistoryResponse`. */
-    history: defineRoute({
-      path: "/threads/:id/history",
+    /**
+     * Download the thread as a self-contained thread file: zstd-compressed JSONL
+     * with a header line naming the thread, then every event in sequence order.
+     * Works the same whether the thread's history is in the database or in the
+     * cold-history archive, and does not restore an archived thread.
+     */
+    exportThread: defineRoute({
+      path: "/threads/:id/export",
       method: "get",
       request: noRequest<PathId>(),
-      response: jsonResponse<ThreadHistoryResponse>(),
+      response: binaryResponse<Uint8Array>(),
     }),
     /**
-     * Move the thread's event history to the archive now, without waiting for
-     * the `coldHistoryAfterArchivedDays` / `coldHistoryAfterIdleDays` delay.
-     * Refused (409) while the thread is running, pinned, has pending
-     * interactions, queued messages or background tasks, or is open in a
-     * client. Answers once the history is cold.
+     * Import a thread file into the thread it was exported from, adding the
+     * events the thread no longer has. 404 when that thread is not on this
+     * server; 400 when the file is not a thread file or uses an unknown format
+     * version.
      */
-    coolHistory: defineRoute({
-      path: "/threads/:id/history/cool",
+    importThread: defineRoute({
+      path: "/threads/import",
       method: "post",
-      request: noRequest<PathId>(),
-      response: jsonResponse<ThreadHistoryResponse>(),
-    }),
-    /** Restore the thread's archived history into the database now. */
-    restoreHistory: defineRoute({
-      path: "/threads/:id/history/restore",
-      method: "post",
-      request: noRequest<PathId>(),
-      response: jsonResponse<ThreadHistoryResponse>(),
+      request: formRequest<EmptyInput, ThreadImportForm>(),
+      response: jsonResponse<ThreadImportResponse>(),
     }),
     /**
      * Ask the environment provider to restore a thread's destroyed environment

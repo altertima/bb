@@ -1,4 +1,4 @@
-import { readFile, stat } from "node:fs/promises";
+import { readFile, stat, writeFile } from "node:fs/promises";
 import { promisify } from "node:util";
 import zlib from "node:zlib";
 import { sql } from "drizzle-orm";
@@ -13,21 +13,21 @@ import {
   threads,
 } from "@bb/db";
 import { threadScope, turnScope } from "@bb/domain";
+import { createBbSdk } from "@bb/sdk/core";
+import { createHttpTransport } from "@bb/sdk/node";
 import { eq } from "drizzle-orm";
 import { getLastProviderThreadId } from "../../src/services/threads/thread-events.js";
 import {
-  readThreadHistorySeekTable,
+  openThreadFile,
   threadHistoryArchivePath,
-} from "../../src/services/threads/history-archive/archive-file.js";
+} from "../../src/services/threads/history-archive/thread-file.js";
 import {
   ensureThreadHistoryHot,
+  holdThreadHistory,
+  isThreadHistoryCold,
   removeOrphanedThreadHistoryFiles,
-  threadHistoryStatus,
 } from "../../src/services/threads/history-archive/thread-history.js";
-import {
-  ThreadHistoryCoolingJob,
-  startThreadHistoryMaintenance,
-} from "../../src/services/threads/history-archive/thread-history-cooling.js";
+import { ThreadHistoryCoolingJob } from "../../src/services/threads/history-archive/thread-history-cooling.js";
 import { readJson } from "../helpers/json.js";
 import {
   seedEvent,
@@ -174,58 +174,110 @@ function seedArchivedConversation(
   return { environment, project, thread };
 }
 
-async function coolNow(harness: TestAppHarness, threadId: string) {
+function cold(harness: TestAppHarness, threadId: string): boolean {
+  return isThreadHistoryCold(harness.db, threadId);
+}
+
+async function coolNow(harness: TestAppHarness, threadId: string): Promise<boolean> {
+  harness.db.run(sql`UPDATE thread_history_archives SET restored_at = NULL`);
   const job = new ThreadHistoryCoolingJob(harness.deps);
-  let settled = false;
-  const cooled = job.requestCooling(threadId).finally(() => {
-    settled = true;
-  });
-  while (!settled) await job.step();
-  await cooled;
+  for (let step = 0; step < 1000; step += 1) {
+    if (getThreadHistoryArchive(harness.db, threadId)?.state === "cold") return true;
+    if ((await job.step()) === "idle") break;
+  }
+  return getThreadHistoryArchive(harness.db, threadId)?.state === "cold";
+}
+
+async function decodeThreadFile(bytes: Buffer): Promise<string[]> {
+  const size = bytes.length;
+  const tableLength = bytes.readUInt32LE(size - 12);
+  const table = JSON.parse(
+    bytes.subarray(size - 12 - tableLength, size - 12).toString(),
+  ) as { frames: Array<{ compressedBytes: number; offset: number }>; headerBytes: number };
+  const regions = [
+    bytes.subarray(0, table.headerBytes),
+    ...table.frames.map((frame) =>
+      bytes.subarray(frame.offset, frame.offset + frame.compressedBytes),
+    ),
+  ];
+  const text = (await Promise.all(regions.map((region) => zstdDecompress(region))))
+    .map((buffer) => buffer.toString())
+    .join("");
+  return text.split("\n").filter((line) => line.length > 0);
+}
+
+function withFormatVersion(bytes: Buffer, formatVersion: number): Buffer {
+  const size = bytes.length;
+  const tableLength = bytes.readUInt32LE(size - 12);
+  const tableStart = size - 12 - tableLength;
+  const table = JSON.parse(bytes.subarray(tableStart, size - 12).toString()) as Record<
+    string,
+    unknown
+  >;
+  const tableBytes = Buffer.from(JSON.stringify({ ...table, formatVersion }));
+  const trailer = Buffer.alloc(12);
+  trailer.writeUInt32LE(tableBytes.length, 0);
+  trailer.write("BBHSEEK1", 4, "ascii");
+  const payload = Buffer.concat([tableBytes, trailer]);
+  const frameHeader = Buffer.alloc(8);
+  frameHeader.writeUInt32LE(0x184d2a5e, 0);
+  frameHeader.writeUInt32LE(payload.length, 4);
+  return Buffer.concat([bytes.subarray(0, tableStart - 8), frameHeader, payload]);
+}
+
+async function exportThread(harness: TestAppHarness, threadId: string): Promise<Buffer> {
+  const response = await harness.app.request(`/api/v1/threads/${threadId}/export`);
+  expect(response.status).toBe(200);
+  expect(response.headers.get("content-type")).toBe("application/zstd");
+  return Buffer.from(await response.arrayBuffer());
+}
+
+function importThread(harness: TestAppHarness, bytes: Buffer): Promise<Response> {
+  const form = new FormData();
+  form.set("file", new Blob([Uint8Array.from(bytes)]), "thread.jsonl.zst");
+  return Promise.resolve(
+    harness.app.request("/api/v1/threads/import", { body: form, method: "POST" }),
+  );
+}
+
+function eventLines(lines: readonly string[]): string[] {
+  return lines.filter((line) => !line.startsWith('{"kind":"header"'));
 }
 
 describe("thread history cold tier", () => {
-  it("moves history to a greppable archive file and restores it byte-for-byte", async () => {
+  it("moves history into a full, greppable thread file and restores it byte-for-byte", async () => {
     await withTestHarness(async (harness) => {
       const { thread } = seedArchivedConversation(harness);
       const before = allRows(harness, thread.id);
-      await coolNow(harness, thread.id);
+      expect(await coolNow(harness, thread.id)).toBe(true);
 
       const remaining = allRows(harness, thread.id);
       expect(remaining.map((row) => row.type)).toEqual([
         "thread/identity",
         "thread/goal/updated",
       ]);
-      expect(threadHistoryStatus(harness.deps, thread.id)).toMatchObject({
-        storage: "cold",
-        archivedRows: before.length - 2,
-      });
+      expect(getThreadHistoryArchive(harness.db, thread.id)?.rowCount).toBe(
+        before.length,
+      );
 
       const path = threadHistoryArchivePath(harness.config.dataDir, thread.id);
-      const file = await readFile(path);
-      const table = await readThreadHistorySeekTable(path);
-      const regions = [
-        file.subarray(0, table.frames[0]?.offset ?? file.length),
-        ...table.frames.map((frame) =>
-          file.subarray(frame.offset, frame.offset + frame.compressedBytes),
-        ),
-      ];
-      const text = (
-        await Promise.all(regions.map((region) => zstdDecompress(region)))
-      )
-        .map((buffer) => buffer.toString())
-        .join("");
-      const lines = text.split("\n").filter((line) => line.length > 0);
+      const file = await openThreadFile(path);
+      expect(file.header).toMatchObject({ threadId: thread.id, providerId: thread.providerId });
+      await file.close();
+      const lines = await decodeThreadFile(await readFile(path));
       expect(JSON.parse(lines[0] ?? "")).toMatchObject({
         kind: "header",
+        format: "bb.thread",
+        formatVersion: 1,
         threadId: thread.id,
       });
-      expect(text).toContain('"text":"The logs are clean."');
-      expect(text).toContain('"dataText":');
+      expect(eventLines(lines)).toHaveLength(before.length);
+      expect(lines.join("\n")).toContain('"text":"The logs are clean."');
+      expect(lines.join("\n")).toContain('"dataText":');
 
       await ensureThreadHistoryHot(harness.deps, thread.id);
       expect(allRows(harness, thread.id)).toEqual(before);
-      expect(threadHistoryStatus(harness.deps, thread.id).storage).toBe("hot");
+      expect(cold(harness, thread.id)).toBe(false);
       await expect(stat(path)).rejects.toThrow();
     });
   });
@@ -255,11 +307,10 @@ describe("thread history cold tier", () => {
       const rowCount = allRows(harness, thread.id).length;
 
       for (const path of paths) {
-        await coolNow(harness, thread.id);
-        expect(threadHistoryStatus(harness.deps, thread.id).storage).toBe("cold");
+        expect(await coolNow(harness, thread.id)).toBe(true);
         expect(await fetchJson(path), path).toEqual(baseline.get(path));
         expect(allRows(harness, thread.id)).toHaveLength(rowCount);
-        expect(threadHistoryStatus(harness.deps, thread.id).storage).toBe("hot");
+        expect(cold(harness, thread.id)).toBe(false);
       }
     });
   });
@@ -321,12 +372,18 @@ describe("thread history cold tier", () => {
     });
   });
 
-  it("refuses to cool a pinned thread or one open in a client", async () => {
+  it("leaves pinned threads and threads held by an import in the database", async () => {
     await withTestHarness(async (harness) => {
       const { thread } = seedArchivedConversation(harness);
       pinThread(harness.db, harness.hub, { threadId: thread.id });
-      await expect(coolNow(harness, thread.id)).rejects.toThrow(/can't be archived/);
+      expect(await coolNow(harness, thread.id)).toBe(false);
       expect(getThreadHistoryArchive(harness.db, thread.id)).toBeNull();
+
+      const other = seedArchivedConversation(harness).thread;
+      const release = holdThreadHistory(harness.db, other.id);
+      expect(await coolNow(harness, other.id)).toBe(false);
+      release();
+      expect(await coolNow(harness, other.id)).toBe(true);
     });
   });
 
@@ -376,37 +433,96 @@ describe("thread history cold tier", () => {
         coldHistoryAfterArchivedDays: 7,
       });
       while ((await job.step()) === "worked") {
-        if (threadHistoryStatus(harness.deps, thread.id).storage === "cold") break;
+        if (cold(harness, thread.id)) break;
       }
-      expect(threadHistoryStatus(harness.deps, thread.id).storage).toBe("cold");
+      expect(cold(harness, thread.id)).toBe(true);
     });
   });
 
-  it("cools and restores through the history routes", async () => {
+  it("exports the same events from a hot and a cold thread without restoring it", async () => {
     await withTestHarness(async (harness) => {
       const { thread } = seedArchivedConversation(harness);
-      const maintenance = startThreadHistoryMaintenance(harness.deps, {
-        isFrozen: () => false,
+      const hot = eventLines(await decodeThreadFile(await exportThread(harness, thread.id)));
+      expect(await coolNow(harness, thread.id)).toBe(true);
+      const rowsWhileCold = allRows(harness, thread.id);
+      const coldExport = eventLines(
+        await decodeThreadFile(await exportThread(harness, thread.id)),
+      );
+      expect(coldExport).toEqual(hot);
+      expect(cold(harness, thread.id)).toBe(true);
+      expect(allRows(harness, thread.id)).toEqual(rowsWhileCold);
+    });
+  });
+
+  it("imports an exported file into its thread through the SDK, adding only the missing events", async () => {
+    await withTestHarness(async (harness) => {
+      const { thread } = seedArchivedConversation(harness);
+      const sdk = createBbSdk({
+        transport: createHttpTransport({
+          baseUrl: "http://localhost",
+          runtime: "node",
+          fetch: async (input, init) => harness.app.fetch(new Request(input, init)),
+        }),
       });
-      try {
-        const cooled = await harness.app.request(
-          `/api/v1/threads/${thread.id}/history/cool`,
-          { method: "POST" },
-        );
-        expect(cooled.status).toBe(200);
-        expect(await readJson(cooled)).toMatchObject({ storage: "cold" });
-        const status = await harness.app.request(
-          `/api/v1/threads/${thread.id}/history`,
-        );
-        expect(await readJson(status)).toMatchObject({ storage: "cold" });
-        const restored = await harness.app.request(
-          `/api/v1/threads/${thread.id}/history/restore`,
-          { method: "POST" },
-        );
-        expect(await readJson(restored)).toMatchObject({ storage: "hot" });
-      } finally {
-        await maintenance.stop();
-      }
+      const before = allRows(harness, thread.id);
+      const bytes = await sdk.threads.experimental_export({ threadId: thread.id });
+      harness.db.run(
+        sql`DELETE FROM events WHERE thread_id = ${thread.id} AND type = 'item/completed'`,
+      );
+      expect(await sdk.threads.experimental_import({ file: bytes })).toEqual({
+        threadId: thread.id,
+        rows: before.length,
+        insertedRows: 2,
+      });
+      expect(allRows(harness, thread.id)).toEqual(before);
+    });
+  });
+
+  it("imports into a cold thread by restoring it first", async () => {
+    await withTestHarness(async (harness) => {
+      const { thread } = seedArchivedConversation(harness);
+      const before = allRows(harness, thread.id);
+      const bytes = await exportThread(harness, thread.id);
+      expect(await coolNow(harness, thread.id)).toBe(true);
+      const response = await importThread(harness, bytes);
+      expect(await readJson(response)).toMatchObject({ insertedRows: 0 });
+      expect(cold(harness, thread.id)).toBe(false);
+      expect(allRows(harness, thread.id)).toEqual(before);
+    });
+  });
+
+  it("rejects a thread that is not on this server and an unknown format version", async () => {
+    await withTestHarness(async (harness) => {
+      const { thread } = seedArchivedConversation(harness);
+      const bytes = await exportThread(harness, thread.id);
+
+      const newer = await importThread(harness, withFormatVersion(bytes, 2));
+      expect(newer.status).toBe(400);
+      expect(JSON.stringify(await readJson(newer))).toContain("format version 2");
+
+      const garbage = await importThread(harness, Buffer.from("not a thread file"));
+      expect(garbage.status).toBe(400);
+
+      harness.db.run(sql`UPDATE threads SET lifecycle_owner_thread_id = NULL`);
+      deleteThread(harness.db, harness.hub, thread.id);
+      const missing = await importThread(harness, bytes);
+      expect(missing.status).toBe(404);
+      expect(JSON.stringify(await readJson(missing))).toContain("another server");
+    });
+  });
+
+  it("leaves a thread cold when its archive uses a format version bb cannot read", async () => {
+    await withTestHarness(async (harness) => {
+      const { thread } = seedArchivedConversation(harness);
+      expect(await coolNow(harness, thread.id)).toBe(true);
+      const path = threadHistoryArchivePath(harness.config.dataDir, thread.id);
+      await writeFile(path, withFormatVersion(await readFile(path), 2));
+      const response = await harness.app.request(
+        `/api/v1/threads/${thread.id}/timeline`,
+      );
+      expect(response.status).toBe(409);
+      expect(cold(harness, thread.id)).toBe(true);
+      expect(getThreadHistoryArchive(harness.db, thread.id)?.state).toBe("cold");
     });
   });
 });

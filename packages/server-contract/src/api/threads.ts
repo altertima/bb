@@ -909,20 +909,22 @@ export type ThreadPaneActionResponse = z.infer<
 >;
 
 /**
- * Where a thread's event history lives. `cold` means bb moved the history of
- * this archived or long-idle thread into a compressed file under the data
- * directory; any read or write restores it first, so callers see the same
- * events either way. `archivedRows` and `packedBytes` describe the file and are
- * 0 while the history is hot.
+ * A thread file uploaded to `POST /threads/import`: a `.jsonl.zst` file written
+ * by `GET /threads/:id/export`.
  */
-export const threadHistoryResponseSchema = z.object({
+export type ThreadImportForm = Record<"file", Blob>;
+
+/**
+ * The result of importing a thread file into the thread it was exported from.
+ * `rows` is the number of events in the file; `insertedRows` is how many of
+ * them the thread did not already have.
+ */
+export const threadImportResponseSchema = z.object({
   threadId: z.string().min(1),
-  storage: z.enum(["hot", "cold"]),
-  archivedRows: z.number().int().nonnegative(),
-  packedBytes: z.number().int().nonnegative(),
-  coldAt: z.number().int().nullable(),
+  rows: z.number().int().nonnegative(),
+  insertedRows: z.number().int().nonnegative(),
 });
-export type ThreadHistoryResponse = z.infer<typeof threadHistoryResponseSchema>;
+export type ThreadImportResponse = z.infer<typeof threadImportResponseSchema>;
 
 export const threadArchiveAllResponseSchema = z.object({
   ok: z.literal(true),

@@ -1159,26 +1159,30 @@ Docs: `backend-sdk.md`.
 3. **Actions.** Confirm `archive` and `delete` are the only cascading
    actions worth previewing.
 
-## `bb.sdk.threads.experimental_history` / `experimental_coolHistory` / `experimental_restoreHistory`
+## `bb.sdk.threads.experimental_export` / `experimental_import`
 
-`GET /threads/:id/history` reports whether a thread's event history is `hot`
-(in `bb.db`) or `cold` (moved by the cold-history tier into
-`<data dir>/archive/threads/<thread id>.jsonl.zst`), with the archived row count
-and file size. `POST /threads/:id/history/cool` moves the history now instead of
-after `coldHistoryAfterArchivedDays` / `coldHistoryAfterIdleDays`, and answers
-409 while the thread is running, pinned, has pending interactions, queued
-messages or background tasks, or is open in a client.
-`POST /threads/:id/history/restore` restores it now. Every other thread read
-and write restores a cold thread first, so callers never need these to see a
-thread's events. Core callers: `bb thread history-archive status|cool|restore`,
-and the same restore path that the timeline, events, output, message, context,
-outline, turn-details, unarchive, send, edit, fork, clear and compact paths
-call before reading events.
+`GET /threads/:id/export` returns the thread as a thread file
+(`application/zstd`): zstd-compressed JSONL whose first line is a header
+(`format: "bb.thread"`, `formatVersion`, thread id, title, project, provider,
+created/archived/exported times), followed by every event in sequence order and
+the retained outputs of those events, with a seek table in a zstd skippable
+frame. A thread whose history the cold-history tier has moved out of `bb.db` is
+exported from its archive file plus any newer rows, without being restored.
+`POST /threads/import` takes the file as a multipart `file` field and inserts
+the events its thread does not already have (`INSERT OR IGNORE`), restoring a
+cold thread first; it answers `{ threadId, rows, insertedRows }`, 404 when the
+file's thread is not on this server, and 400 for a file that is not a thread
+file or uses a format version this bb does not read. Core callers:
+`bb thread export` / `bb thread import`. The cold-history tier uses the same
+writer to produce its archive files and the same insert path to restore them,
+and its restore refuses unknown format versions the same way, leaving the
+thread archived.
 
-Stabilization: confirm the response shape covers what the Storage page needs
-(archive size per thread), run one release with the tier on by default without
-restore failures in telemetry or bug reports, then rename project-wide and drop
-this entry.
+Stabilization: decide what a cross-server import does with project mapping,
+attachments and provider sessions (it is refused today), commit to reading
+every shipped format version, run one release with the cold tier on by default
+without restore failures in telemetry or bug reports, then rename project-wide
+and drop this entry.
 
 Docs: `bb guide thread-lifecycle`, `bb guide customization`.
 

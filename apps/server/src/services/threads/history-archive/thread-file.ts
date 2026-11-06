@@ -1,12 +1,12 @@
 import { createHash } from "node:crypto";
 import { mkdir, open, readdir, rename, rm, stat } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import zlib from "node:zlib";
 import { z } from "zod";
 import {
-  THREAD_HISTORY_ARCHIVE_FORMAT_VERSION,
+  THREAD_FILE_FORMAT_VERSION,
   type ThreadHistoryEventRow,
   type ThreadHistoryRetainedOutputRow,
 } from "@bb/db";
@@ -21,17 +21,22 @@ const SEEK_TRAILER_BYTES = 4 + SEEK_TRAILER_MAGIC.length;
 const ARCHIVE_EXTENSION = ".jsonl.zst";
 const TEMP_SUFFIX = ".tmp";
 
-export const THREAD_HISTORY_FRAME_RAW_BYTES = 1024 * 1024;
+const THREAD_FILE_FORMAT = "bb.thread";
 
-export interface ThreadHistoryArchiveHeader {
+export const THREAD_FILE_FRAME_RAW_BYTES = 1024 * 1024;
+
+export interface ThreadFileHeader {
   archivedAt: number | null;
+  createdAt: number;
+  exportedAt: number;
   projectId: string;
   projectName: string | null;
+  providerId: string;
   threadId: string;
   title: string | null;
 }
 
-export interface ThreadHistoryFrameEntry {
+export interface ThreadFileFrameEntry {
   compressedBytes: number;
   firstSequence: number;
   lastSequence: number;
@@ -41,15 +46,17 @@ export interface ThreadHistoryFrameEntry {
   sha256: string;
 }
 
-export interface ThreadHistorySeekTable {
+export interface ThreadFileSeekTable {
   formatVersion: number;
-  frames: ThreadHistoryFrameEntry[];
+  frames: ThreadFileFrameEntry[];
+  headerBytes: number;
+  lastSequence: number | null;
   rawBytes: number;
   rows: number;
   threadId: string;
 }
 
-export interface ThreadHistoryFrameContents {
+export interface ThreadFileFrameContents {
   retained: ThreadHistoryRetainedOutputRow[];
   rows: ThreadHistoryEventRow[];
 }
@@ -67,10 +74,36 @@ const frameEntrySchema = z.object({
 const seekTableSchema = z.object({
   formatVersion: z.number().int(),
   frames: z.array(frameEntrySchema),
+  headerBytes: z.number().int().positive(),
+  lastSequence: z.number().int().nullable(),
   rawBytes: z.number().int().nonnegative(),
   rows: z.number().int().nonnegative(),
   threadId: z.string().min(1),
 });
+
+const headerLineSchema = z.object({
+  kind: z.literal("header"),
+  format: z.literal(THREAD_FILE_FORMAT),
+  formatVersion: z.number().int(),
+  archivedAt: z.number().int().nullable(),
+  createdAt: z.number().int(),
+  exportedAt: z.number().int(),
+  projectId: z.string().min(1),
+  projectName: z.string().nullable(),
+  providerId: z.string().min(1),
+  threadId: z.string().min(1),
+  title: z.string().nullable(),
+});
+
+export class ThreadFileError extends Error {}
+
+function assertSupportedVersion(formatVersion: number): void {
+  if (formatVersion !== THREAD_FILE_FORMAT_VERSION) {
+    throw new ThreadFileError(
+      `Thread file uses format version ${formatVersion}; this version of bb reads version ${THREAD_FILE_FORMAT_VERSION}`,
+    );
+  }
+}
 
 const eventLineBaseSchema = z.object({
   kind: z.literal("event"),
@@ -112,8 +145,27 @@ export function threadHistoryArchivePath(
   return join(threadHistoryArchiveDir(dataDir), `${threadId}${ARCHIVE_EXTENSION}`);
 }
 
+function eventColumns(row: ThreadHistoryEventRow) {
+  return {
+    kind: "event",
+    id: row.id,
+    threadId: row.threadId,
+    environmentId: row.environmentId,
+    scopeKind: row.scopeKind,
+    turnId: row.turnId,
+    providerThreadId: row.providerThreadId,
+    sequence: row.sequence,
+    type: row.type,
+    itemId: row.itemId,
+    itemKind: row.itemKind,
+    parentToolCallId: row.parentToolCallId,
+    createdAt: row.createdAt,
+  };
+}
+
 function eventLine(row: ThreadHistoryEventRow): string {
-  const { data, ...columns } = row;
+  const { data } = row;
+  const columns = eventColumns(row);
   let nested: unknown;
   try {
     nested = JSON.parse(data);
@@ -123,17 +175,23 @@ function eventLine(row: ThreadHistoryEventRow): string {
   const isObject =
     typeof nested === "object" && nested !== null && !Array.isArray(nested);
   if (isObject && JSON.stringify(nested) === data) {
-    return JSON.stringify({ kind: "event", ...columns, data: nested });
+    return JSON.stringify({ ...columns, data: nested });
   }
-  return JSON.stringify({ kind: "event", ...columns, dataText: data });
+  return JSON.stringify({ ...columns, dataText: data });
 }
 
 function retainedLine(row: ThreadHistoryRetainedOutputRow): string {
-  return JSON.stringify({ kind: "retained", ...row });
+  return JSON.stringify({
+    kind: "retained",
+    eventId: row.eventId,
+    outputPath: row.outputPath,
+    value: row.value,
+    expiresAt: row.expiresAt,
+  });
 }
 
-export class ThreadHistoryArchiveWriter {
-  private frames: ThreadHistoryFrameEntry[] = [];
+export class ThreadFileWriter {
+  private frames: ThreadFileFrameEntry[] = [];
   private pendingLines: string[] = [];
   private pendingBytes = 0;
   private pendingRows = 0;
@@ -142,6 +200,8 @@ export class ThreadHistoryArchiveWriter {
   private offset = 0;
   private totalRows = 0;
   private totalRawBytes = 0;
+  private lastSequence: number | null = null;
+  private headerBytes = 0;
   private flushing: Promise<void> = Promise.resolve();
 
   private constructor(
@@ -152,34 +212,31 @@ export class ThreadHistoryArchiveWriter {
   ) {}
 
   static async create(args: {
-    dataDir: string;
-    header: ThreadHistoryArchiveHeader;
-  }): Promise<ThreadHistoryArchiveWriter> {
-    await mkdir(threadHistoryArchiveDir(args.dataDir), { recursive: true });
-    const finalPath = threadHistoryArchivePath(
-      args.dataDir,
-      args.header.threadId,
-    );
-    const tempPath = `${finalPath}${TEMP_SUFFIX}`;
+    header: ThreadFileHeader;
+    path: string;
+  }): Promise<ThreadFileWriter> {
+    await mkdir(dirname(args.path), { recursive: true });
+    const tempPath = `${args.path}${TEMP_SUFFIX}`;
     const handle = await open(tempPath, "w");
-    const writer = new ThreadHistoryArchiveWriter(
+    const writer = new ThreadFileWriter(
       handle,
       tempPath,
-      finalPath,
+      args.path,
       args.header.threadId,
     );
     const headerFrame = await zstdCompress(
       Buffer.from(
         `${JSON.stringify({
           kind: "header",
-          bbArchive: 1,
-          formatVersion: THREAD_HISTORY_ARCHIVE_FORMAT_VERSION,
+          format: THREAD_FILE_FORMAT,
+          formatVersion: THREAD_FILE_FORMAT_VERSION,
           ...args.header,
         })}\n`,
       ),
       { params: { [zlib.constants.ZSTD_c_compressionLevel]: ZSTD_LEVEL } },
     );
     await writer.write(headerFrame);
+    writer.headerBytes = headerFrame.length;
     return writer;
   }
 
@@ -202,6 +259,7 @@ export class ThreadHistoryArchiveWriter {
       this.pendingRows += 1;
       this.pendingFirst ??= row.sequence;
       this.pendingLast = row.sequence;
+      this.lastSequence = row.sequence;
     }
     for (const output of retained) {
       const line = retainedLine(output);
@@ -263,9 +321,11 @@ export class ThreadHistoryArchiveWriter {
 
   async seal(): Promise<{ packedBytes: number; rawBytes: number; rows: number }> {
     await this.flushFrame();
-    const table: ThreadHistorySeekTable = {
-      formatVersion: THREAD_HISTORY_ARCHIVE_FORMAT_VERSION,
+    const table: ThreadFileSeekTable = {
+      formatVersion: THREAD_FILE_FORMAT_VERSION,
       frames: this.frames,
+      headerBytes: this.headerBytes,
+      lastSequence: this.lastSequence,
       rawBytes: this.totalRawBytes,
       rows: this.totalRows,
       threadId: this.threadId,
@@ -301,35 +361,109 @@ export class ThreadHistoryArchiveWriter {
   }
 }
 
-export async function readThreadHistorySeekTable(
-  path: string,
-): Promise<ThreadHistorySeekTable> {
+function parseThreadFileJson<T>(
+  what: string,
+  text: string,
+  schema: z.ZodType<T>,
+): T {
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    throw new ThreadFileError(`Thread file has an unreadable ${what}`);
+  }
+  const parsed = schema.safeParse(value);
+  if (!parsed.success) {
+    throw new ThreadFileError(`Thread file has an invalid ${what}`);
+  }
+  return parsed.data;
+}
+
+async function readSeekTable(handle: FileHandle): Promise<ThreadFileSeekTable> {
+  const { size } = await handle.stat();
+  if (size < SEEK_TRAILER_BYTES) {
+    throw new ThreadFileError(`Thread file is truncated`);
+  }
+  const trailer = Buffer.alloc(SEEK_TRAILER_BYTES);
+  await handle.read(trailer, 0, SEEK_TRAILER_BYTES, size - SEEK_TRAILER_BYTES);
+  if (trailer.toString("ascii", 4) !== SEEK_TRAILER_MAGIC) {
+    throw new ThreadFileError(
+      `Thread file is not a bb thread file or is incomplete`,
+    );
+  }
+  const tableLength = trailer.readUInt32LE(0);
+  if (tableLength > size - SEEK_TRAILER_BYTES) {
+    throw new ThreadFileError(`Thread file is truncated`);
+  }
+  const tableBytes = Buffer.alloc(tableLength);
+  await handle.read(
+    tableBytes,
+    0,
+    tableLength,
+    size - SEEK_TRAILER_BYTES - tableLength,
+  );
+  const formatVersion = parseThreadFileJson(
+    "seek table",
+    tableBytes.toString("utf8"),
+    z.object({ formatVersion: z.number().int() }),
+  ).formatVersion;
+  assertSupportedVersion(formatVersion);
+  return parseThreadFileJson(
+    "seek table",
+    tableBytes.toString("utf8"),
+    seekTableSchema,
+  );
+}
+
+async function readHeader(
+  handle: FileHandle,
+  table: ThreadFileSeekTable,
+): Promise<ThreadFileHeader> {
+  const compressed = Buffer.alloc(table.headerBytes);
+  await handle.read(compressed, 0, table.headerBytes, 0);
+  let raw: Buffer;
+  try {
+    raw = await zstdDecompress(compressed);
+  } catch {
+    throw new ThreadFileError(`Thread file has an unreadable header`);
+  }
+  const line = raw.toString("utf8").split("\n", 1)[0] ?? "";
+  const {
+    kind: _kind,
+    format: _format,
+    formatVersion,
+    ...header
+  } = parseThreadFileJson("header", line, headerLineSchema);
+  assertSupportedVersion(formatVersion);
+  if (header.threadId !== table.threadId) {
+    throw new ThreadFileError(
+      `Thread file names two different threads in its header and seek table`,
+    );
+  }
+  return header;
+}
+
+export interface OpenThreadFile {
+  close(): Promise<void>;
+  handle: FileHandle;
+  header: ThreadFileHeader;
+  path: string;
+  table: ThreadFileSeekTable;
+}
+
+export async function openThreadFile(path: string): Promise<OpenThreadFile> {
   const handle = await open(path, "r");
   try {
-    const { size } = await handle.stat();
-    if (size < SEEK_TRAILER_BYTES) {
-      throw new Error(`Thread history archive ${path} is truncated`);
-    }
-    const trailer = Buffer.alloc(SEEK_TRAILER_BYTES);
-    await handle.read(trailer, 0, SEEK_TRAILER_BYTES, size - SEEK_TRAILER_BYTES);
-    if (trailer.toString("ascii", 4) !== SEEK_TRAILER_MAGIC) {
-      throw new Error(`Thread history archive ${path} has no seek table`);
-    }
-    const tableLength = trailer.readUInt32LE(0);
-    const tableBytes = Buffer.alloc(tableLength);
-    await handle.read(
-      tableBytes,
-      0,
-      tableLength,
-      size - SEEK_TRAILER_BYTES - tableLength,
-    );
-    return seekTableSchema.parse(JSON.parse(tableBytes.toString("utf8")));
-  } finally {
+    const table = await readSeekTable(handle);
+    const header = await readHeader(handle, table);
+    return { close: () => handle.close(), handle, header, path, table };
+  } catch (error) {
     await handle.close();
+    throw error;
   }
 }
 
-function parseFrameLines(raw: Buffer): ThreadHistoryFrameContents {
+function parseFrameLines(raw: Buffer): ThreadFileFrameContents {
   const rows: ThreadHistoryEventRow[] = [];
   const retained: ThreadHistoryRetainedOutputRow[] = [];
   for (const line of raw.toString("utf8").split("\n")) {
@@ -354,25 +488,50 @@ function parseFrameLines(raw: Buffer): ThreadHistoryFrameContents {
   return { retained, rows };
 }
 
-export async function readThreadHistoryFrame(
+async function readCheckedFrame(
   handle: FileHandle,
-  entry: ThreadHistoryFrameEntry,
-): Promise<ThreadHistoryFrameContents> {
+  entry: ThreadFileFrameEntry,
+): Promise<Buffer> {
   const compressed = Buffer.alloc(entry.compressedBytes);
   await handle.read(compressed, 0, entry.compressedBytes, entry.offset);
-  const digest = createHash("sha256").update(compressed).digest("hex");
-  if (digest !== entry.sha256) {
-    throw new Error(
-      `Thread history archive frame at ${entry.offset} failed its checksum`,
+  if (createHash("sha256").update(compressed).digest("hex") !== entry.sha256) {
+    throw new ThreadFileError(
+      `Thread file frame at ${entry.offset} failed its checksum`,
     );
   }
   const raw = await zstdDecompress(compressed);
   if (raw.length !== entry.rawBytes) {
-    throw new Error(
-      `Thread history archive frame at ${entry.offset} decoded to ${raw.length} bytes, expected ${entry.rawBytes}`,
+    throw new ThreadFileError(
+      `Thread file frame at ${entry.offset} decoded to ${raw.length} bytes, expected ${entry.rawBytes}`,
     );
   }
-  return parseFrameLines(raw);
+  return raw;
+}
+
+export async function readThreadFileFrame(
+  file: OpenThreadFile,
+  entry: ThreadFileFrameEntry,
+): Promise<ThreadFileFrameContents> {
+  const raw = await readCheckedFrame(file.handle, entry);
+  let contents: ThreadFileFrameContents;
+  try {
+    contents = parseFrameLines(raw);
+  } catch {
+    throw new ThreadFileError(
+      `Thread file has an invalid line in the frame at ${entry.offset}`,
+    );
+  }
+  if (contents.rows.some((row) => row.threadId !== file.table.threadId)) {
+    throw new ThreadFileError(
+      `Thread file has events from another thread`,
+    );
+  }
+  if (contents.rows.length !== entry.rows) {
+    throw new ThreadFileError(
+      `Thread file frame at ${entry.offset} has ${contents.rows.length} events, expected ${entry.rows}`,
+    );
+  }
+  return contents;
 }
 
 const EVENT_LINE_MARKER = Buffer.from('{"kind":"event"');
@@ -387,64 +546,11 @@ function countEventLines(raw: Buffer): number {
   return count;
 }
 
-export async function verifyThreadHistoryFrame(
-  handle: FileHandle,
-  entry: ThreadHistoryFrameEntry,
+export async function verifyThreadFileFrame(
+  file: OpenThreadFile,
+  entry: ThreadFileFrameEntry,
 ): Promise<number> {
-  const compressed = Buffer.alloc(entry.compressedBytes);
-  await handle.read(compressed, 0, entry.compressedBytes, entry.offset);
-  if (createHash("sha256").update(compressed).digest("hex") !== entry.sha256) {
-    throw new Error(
-      `Thread history archive frame at ${entry.offset} failed its checksum`,
-    );
-  }
-  const raw = await zstdDecompress(compressed);
-  if (raw.length !== entry.rawBytes) {
-    throw new Error(
-      `Thread history archive frame at ${entry.offset} decoded to ${raw.length} bytes, expected ${entry.rawBytes}`,
-    );
-  }
-  return countEventLines(raw);
-}
-
-export async function openThreadHistoryArchive(path: string): Promise<{
-  close(): Promise<void>;
-  handle: FileHandle;
-  table: ThreadHistorySeekTable;
-}> {
-  const table = await readThreadHistorySeekTable(path);
-  const handle = await open(path, "r");
-  return { close: () => handle.close(), handle, table };
-}
-
-export async function verifyThreadHistoryArchive(
-  path: string,
-  expected: { rows: number; threadId: string },
-): Promise<ThreadHistorySeekTable> {
-  const archive = await openThreadHistoryArchive(path);
-  try {
-    if (archive.table.threadId !== expected.threadId) {
-      throw new Error(`Thread history archive ${path} belongs to another thread`);
-    }
-    let rows = 0;
-    for (const entry of archive.table.frames) {
-      const contents = await readThreadHistoryFrame(archive.handle, entry);
-      if (contents.rows.length !== entry.rows) {
-        throw new Error(
-          `Thread history archive frame at ${entry.offset} has ${contents.rows.length} rows, expected ${entry.rows}`,
-        );
-      }
-      rows += contents.rows.length;
-    }
-    if (rows !== expected.rows || archive.table.rows !== expected.rows) {
-      throw new Error(
-        `Thread history archive ${path} has ${rows} rows, expected ${expected.rows}`,
-      );
-    }
-    return archive.table;
-  } finally {
-    await archive.close();
-  }
+  return countEventLines(await readCheckedFrame(file.handle, entry));
 }
 
 export async function removeThreadHistoryArchive(

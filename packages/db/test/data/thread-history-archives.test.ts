@@ -7,12 +7,12 @@ import { upsertHost } from "../../src/data/hosts.js";
 import { createProject } from "../../src/data/projects.js";
 import { createQueuedThreadMessage } from "../../src/data/queued-thread-messages.js";
 import {
-  THREAD_HISTORY_ARCHIVE_FORMAT_VERSION,
+  THREAD_FILE_FORMAT_VERSION,
   deleteThreadHistoryColdWindow,
   insertThreadHistoryRows,
   isThreadHistoryCoolable,
   listThreadHistoryCoolingCandidates,
-  readThreadHistoryColdWindow,
+  readThreadEventWindow,
   upsertThreadHistoryArchive,
   type ThreadHistoryCoolingCriteria,
 } from "../../src/data/thread-history-archives.js";
@@ -181,6 +181,26 @@ describe("thread history cooling eligibility", () => {
     ).toBe(true);
   });
 
+  it("skips threads with nothing to move: no events, or only keep-hot rows and the latest row", () => {
+    const context = setup();
+    const empty = createThread(context.db, noopNotifier, {
+      projectId: context.project.id,
+      providerId: "codex",
+      environmentId: context.environment.id,
+      status: "idle",
+    });
+    archiveThread(context.db, noopNotifier, empty.id);
+    expect(coolable(context.db, empty.id)).toBe(false);
+
+    const thread = seedThread(context);
+    context.db.run(
+      sql`DELETE FROM events WHERE thread_id = ${thread.id} AND sequence IN (2, 3, 4)`,
+    );
+    expect(coolable(context.db, thread.id)).toBe(false);
+    context.db.run(sql`DELETE FROM events WHERE thread_id = ${thread.id} AND sequence = 5`);
+    expect(coolable(context.db, thread.id)).toBe(false);
+  });
+
   it("skips projects whose attachment backfill is not done", () => {
     const context = setup();
     const thread = seedThread(context);
@@ -263,7 +283,7 @@ describe("thread history cooling eligibility", () => {
       coldAt: null,
       coldBeforeSequence: 5,
       cursorSequence: 0,
-      formatVersion: THREAD_HISTORY_ARCHIVE_FORMAT_VERSION,
+      formatVersion: THREAD_FILE_FORMAT_VERSION,
       packedBytes: 0,
       rawBytes: 0,
       restoredAt: null,
@@ -290,20 +310,20 @@ describe("thread history cooling eligibility", () => {
 });
 
 describe("thread history cold windows", () => {
-  it("leaves keep-hot rows and the latest row in the database and restores the rest byte-for-byte", () => {
+  it("deletes all but keep-hot rows and the latest row, and re-inserts a full window byte-for-byte", () => {
     const context = setup();
     const thread = seedThread(context);
     const before = context.db.all<{ id: string; sequence: number; data: string }>(
       sql`SELECT * FROM events WHERE thread_id = ${thread.id} ORDER BY sequence`,
     );
-    const window = readThreadHistoryColdWindow(context.db, {
+    const window = readThreadEventWindow(context.db, {
       afterSequence: 0,
-      beforeSequence: 5,
       maxBytes: 1024 * 1024,
       maxRows: 100,
       threadId: thread.id,
+      throughSequence: 5,
     });
-    expect(window.rows.map((row) => row.sequence)).toEqual([2, 3, 4]);
+    expect(window.rows.map((row) => row.sequence)).toEqual([1, 2, 3, 4, 5]);
 
     const deleted = deleteThreadHistoryColdWindow(context.db, {
       afterSequence: 0,
@@ -345,13 +365,13 @@ describe("thread history cold windows", () => {
   it("stops a window at the byte cap but always takes one row", () => {
     const context = setup();
     const thread = seedThread(context);
-    const window = readThreadHistoryColdWindow(context.db, {
+    const window = readThreadEventWindow(context.db, {
       afterSequence: 0,
-      beforeSequence: 5,
       maxBytes: 1,
       maxRows: 100,
       threadId: thread.id,
+      throughSequence: null,
     });
-    expect(window.rows.map((row) => row.sequence)).toEqual([2]);
+    expect(window.rows.map((row) => row.sequence)).toEqual([1]);
   });
 });

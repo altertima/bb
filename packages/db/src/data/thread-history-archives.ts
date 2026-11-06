@@ -10,7 +10,7 @@ import {
 } from "../schema.js";
 import { queryInSqliteVariableBatches } from "./sqlite-variable-batches.js";
 
-export const THREAD_HISTORY_ARCHIVE_FORMAT_VERSION = 1;
+export const THREAD_FILE_FORMAT_VERSION = 1;
 
 export const THREAD_HISTORY_KEEP_HOT_EVENT_TYPES = [
   "thread/identity",
@@ -53,7 +53,15 @@ export interface ThreadHistoryWindowArgs {
   threadId: string;
 }
 
-export interface ThreadHistoryColdWindow {
+export interface ThreadEventWindowArgs {
+  afterSequence: number;
+  maxBytes: number;
+  maxRows: number;
+  threadId: string;
+  throughSequence: number | null;
+}
+
+export interface ThreadEventWindow {
   bytes: number;
   lastSequence: number | null;
   retained: ThreadHistoryRetainedOutputRow[];
@@ -116,6 +124,12 @@ function coolingEligibilitySql(
     )
     AND NOT EXISTS (SELECT 1 FROM queued_thread_messages q WHERE q.thread_id = t.id)
     AND NOT EXISTS (SELECT 1 FROM thread_pruning_work w WHERE w.thread_id = t.id)
+    AND EXISTS (
+      SELECT 1 FROM events e
+      WHERE e.thread_id = t.id
+        AND e.type NOT IN (${keepHotTypes})
+        AND e.sequence < (SELECT max(m.sequence) FROM events m WHERE m.thread_id = t.id)
+    )
     AND NOT EXISTS (
       SELECT 1 FROM events s
       WHERE s.thread_id = t.id
@@ -296,7 +310,7 @@ export function getThreadHistoryArchiveTotals(
   return row ?? { coldThreads: 0, packedBytes: 0, rawBytes: 0, rowCount: 0 };
 }
 
-const coldWindowSql = (args: ThreadHistoryWindowArgs) => sql`
+const eventWindowSql = (args: ThreadEventWindowArgs) => sql`
   SELECT
     id,
     thread_id AS threadId,
@@ -314,8 +328,7 @@ const coldWindowSql = (args: ThreadHistoryWindowArgs) => sql`
   FROM events
   WHERE thread_id = ${args.threadId}
     AND sequence > ${args.afterSequence}
-    AND sequence < ${args.beforeSequence}
-    AND type NOT IN (${keepHotTypes})
+    ${args.throughSequence === null ? sql`` : sql`AND sequence <= ${args.throughSequence}`}
   ORDER BY sequence
   LIMIT ${args.maxRows}
 `;
@@ -359,12 +372,12 @@ function listRetainedOutputsForEvents(
   });
 }
 
-export function readThreadHistoryColdWindow(
+export function readThreadEventWindow(
   db: DbQueryConnection,
-  args: ThreadHistoryWindowArgs,
-): ThreadHistoryColdWindow {
+  args: ThreadEventWindowArgs,
+): ThreadEventWindow {
   const { bytes, rows } = takeWithinBytes(
-    db.all<ThreadHistoryEventRow>(coldWindowSql(args)),
+    db.all<ThreadHistoryEventRow>(eventWindowSql(args)),
     (row) => Buffer.byteLength(row.data),
     args.maxBytes,
   );
@@ -406,20 +419,6 @@ export function deleteThreadHistoryColdWindow(
   const deleted = db.delete(events).where(inArray(events.id, ids)).run()
     .changes;
   return { bytes, deleted, lastSequence: rows.at(-1)?.sequence ?? null };
-}
-
-export function countThreadHistoryColdRows(
-  db: DbQueryConnection,
-  args: { beforeSequence: number; threadId: string },
-): number {
-  return (
-    db.get<{ value: number }>(sql`
-      SELECT count(*) AS value FROM events
-      WHERE thread_id = ${args.threadId}
-        AND sequence < ${args.beforeSequence}
-        AND type NOT IN (${keepHotTypes})
-    `)?.value ?? 0
-  );
 }
 
 export function insertThreadHistoryRows(

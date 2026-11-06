@@ -9,30 +9,47 @@ import {
   type DbConnection,
   type ThreadHistoryArchive,
 } from "@bb/db";
+import { ApiError } from "../../../errors.js";
 import type { AppDeps } from "../../../types.js";
 import { requirePublicThread } from "../../lib/entity-lookup.js";
 import {
+  ThreadFileError,
   listThreadHistoryArchiveFiles,
-  openThreadHistoryArchive,
-  readThreadHistoryFrame,
+  openThreadFile,
+  readThreadFileFrame,
   removeThreadHistoryArchive,
   threadHistoryArchiveExists,
   threadHistoryArchivePath,
-} from "./archive-file.js";
+  type OpenThreadFile,
+} from "./thread-file.js";
 
 export type ThreadHistoryDeps = Pick<AppDeps, "config" | "db" | "logger">;
 
-export type ThreadHistoryStorage = "hot" | "cold";
+const INSERT_WINDOW_ROWS = 256;
 
-export interface ThreadHistoryStatus {
-  archivedRows: number;
-  coldAt: number | null;
-  packedBytes: number;
-  storage: ThreadHistoryStorage;
-  threadId: string;
+const heldByDb = new WeakMap<DbConnection, Map<string, number>>();
+
+export function holdThreadHistory(db: DbConnection, threadId: string): () => void {
+  let held = heldByDb.get(db);
+  if (held === undefined) {
+    held = new Map();
+    heldByDb.set(db, held);
+  }
+  const holds = held;
+  holds.set(threadId, (holds.get(threadId) ?? 0) + 1);
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    const remaining = (holds.get(threadId) ?? 1) - 1;
+    if (remaining === 0) holds.delete(threadId);
+    else holds.set(threadId, remaining);
+  };
 }
 
-const RESTORE_WINDOW_ROWS = 256;
+export function isThreadHistoryHeld(db: DbConnection, threadId: string): boolean {
+  return heldByDb.get(db)?.has(threadId) ?? false;
+}
 
 const restoresByDb = new WeakMap<DbConnection, Map<string, Promise<void>>>();
 
@@ -58,19 +75,8 @@ function yieldToEventLoop(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve));
 }
 
-export function threadHistoryStatus(
-  deps: Pick<AppDeps, "db">,
-  threadId: string,
-): ThreadHistoryStatus {
-  const archive = getThreadHistoryArchive(deps.db, threadId);
-  const cold = needsRestore(archive);
-  return {
-    archivedRows: cold && archive !== null ? archive.rowCount : 0,
-    coldAt: cold && archive !== null ? archive.coldAt : null,
-    packedBytes: cold && archive !== null ? archive.packedBytes : 0,
-    storage: cold ? "cold" : "hot",
-    threadId,
-  };
+export function isThreadHistoryCold(db: DbConnection, threadId: string): boolean {
+  return needsRestore(getThreadHistoryArchive(db, threadId));
 }
 
 export async function ensureThreadHistoryHot(
@@ -115,6 +121,68 @@ function markHot(db: DbConnection, threadId: string, restoredAt: number): void {
   });
 }
 
+export async function insertThreadFileRows(
+  deps: ThreadHistoryDeps,
+  file: OpenThreadFile,
+): Promise<number> {
+  let inserted = 0;
+  for (const entry of file.table.frames) {
+    const frame = await readThreadFileFrame(file, entry);
+    for (let offset = 0; offset < frame.rows.length; offset += INSERT_WINDOW_ROWS) {
+      const rows = frame.rows.slice(offset, offset + INSERT_WINDOW_ROWS);
+      const eventIds = new Set(rows.map((row) => row.id));
+      const now = Date.now();
+      inserted += deps.db.transaction(
+        (tx) =>
+          insertThreadHistoryRows(tx, {
+            now,
+            retained: frame.retained.filter((output) =>
+              eventIds.has(output.eventId),
+            ),
+            rows,
+          }),
+        { behavior: "immediate" },
+      );
+      await yieldToEventLoop();
+    }
+  }
+  return inserted;
+}
+
+async function openArchiveForRestore(
+  deps: ThreadHistoryDeps,
+  archive: ThreadHistoryArchive,
+): Promise<OpenThreadFile | null> {
+  if (!(await threadHistoryArchiveExists(deps.config.dataDir, archive.threadId))) {
+    if (archive.rowCount > 0) {
+      deps.logger.error(
+        { threadId: archive.threadId, rows: archive.rowCount },
+        "Thread history archive file is missing; its archived events cannot be restored",
+      );
+    }
+    return null;
+  }
+  try {
+    const file = await openThreadFile(
+      threadHistoryArchivePath(deps.config.dataDir, archive.threadId),
+    );
+    if (file.header.threadId !== archive.threadId) {
+      await file.close();
+      throw new ThreadFileError(
+        `Thread history archive for ${archive.threadId} belongs to thread ${file.header.threadId}`,
+      );
+    }
+    return file;
+  } catch (error) {
+    if (!(error instanceof ThreadFileError)) throw error;
+    deps.logger.error(
+      { threadId: archive.threadId, err: error },
+      "Thread history archive cannot be read; leaving the thread's history archived",
+    );
+    throw new ApiError(409, "thread_history_unreadable", error.message);
+  }
+}
+
 async function restoreThreadHistory(
   deps: ThreadHistoryDeps,
   threadId: string,
@@ -122,43 +190,19 @@ async function restoreThreadHistory(
   const archive = getThreadHistoryArchive(deps.db, threadId);
   if (archive === null || !needsRestore(archive)) return;
   const startedAt = performance.now();
+  const file = await openArchiveForRestore(deps, archive);
   markRestoring(deps.db, archive);
-  const path = threadHistoryArchivePath(deps.config.dataDir, threadId);
   let inserted = 0;
-  if (!(await threadHistoryArchiveExists(deps.config.dataDir, threadId))) {
-    if (archive.rowCount > 0) {
-      deps.logger.error(
-        { threadId, rows: archive.rowCount },
-        "Thread history archive file is missing; its archived events cannot be restored",
-      );
-    }
-  } else {
-    const file = await openThreadHistoryArchive(path);
+  if (file !== null) {
     try {
-      for (const entry of file.table.frames) {
-        const frame = await readThreadHistoryFrame(file.handle, entry);
-        for (
-          let offset = 0;
-          offset < frame.rows.length;
-          offset += RESTORE_WINDOW_ROWS
-        ) {
-          const rows = frame.rows.slice(offset, offset + RESTORE_WINDOW_ROWS);
-          const eventIds = new Set(rows.map((row) => row.id));
-          const now = Date.now();
-          inserted += deps.db.transaction(
-            (tx) =>
-              insertThreadHistoryRows(tx, {
-                now,
-                retained: frame.retained.filter((output) =>
-                  eventIds.has(output.eventId),
-                ),
-                rows,
-              }),
-            { behavior: "immediate" },
-          );
-          await yieldToEventLoop();
-        }
-      }
+      inserted = await insertThreadFileRows(deps, file);
+    } catch (error) {
+      if (!(error instanceof ThreadFileError)) throw error;
+      deps.logger.error(
+        { threadId, err: error },
+        "Thread history archive is damaged; leaving the thread's history archived",
+      );
+      throw new ApiError(409, "thread_history_unreadable", error.message);
     } finally {
       await file.close();
     }

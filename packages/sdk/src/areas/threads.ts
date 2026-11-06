@@ -14,6 +14,7 @@ import {
 } from "@bb/domain";
 import {
   DEFAULT_TURN_RETRY_REASON,
+  threadImportResponseSchema,
   threadTabsResponseSchema,
 } from "@bb/server-contract";
 import type {
@@ -29,7 +30,7 @@ import type {
   SendQueuedMessageResponse,
   ThreadArchiveAllResponse,
   ThreadChildSummaryResponse,
-  ThreadHistoryResponse,
+  ThreadImportResponse,
   ThreadConversationOutlineResponse,
   ThreadCountGroupBy,
   ThreadCountQuery,
@@ -212,7 +213,7 @@ export type ThreadCompactResult = { ok: true };
 export type ThreadBannerActionResult = { ok: true };
 export type ThreadUnarchiveResult = { ok: true };
 export type ThreadArchiveAllResult = ThreadArchiveAllResponse;
-export type ThreadHistoryResult = ThreadHistoryResponse;
+export type ThreadImportResult = ThreadImportResponse;
 export type ThreadReadStateResult = ThreadResponse;
 export type ThreadRestoreEnvironmentResult = ThreadResponse;
 export type ThreadPinOrderResult = ThreadListResponse;
@@ -337,6 +338,11 @@ export interface ThreadRetryArgs {
 export interface ThreadActionArgs {
   signal?: AbortSignal;
   threadId: string;
+}
+
+export interface ThreadImportArgs {
+  file: ArrayBuffer | Blob | Uint8Array;
+  signal?: AbortSignal;
 }
 
 export interface ThreadStatusArgs extends ThreadActionArgs {
@@ -688,25 +694,18 @@ export interface ThreadsArea {
     args: ThreadActionArgs,
   ): Promise<ThreadMutationResult>;
   /**
-   * Where the thread's event history lives: `hot` in the database, or `cold`
-   * in a compressed archive file that any read or write restores first.
+   * Download the thread as a thread file: zstd-compressed JSONL with a header
+   * line, then every event in sequence order. Works the same for threads whose
+   * history bb has moved to the cold-history archive, without restoring them.
    * Experimental: see docs/api_to_audit.md.
    */
-  experimental_history(args: ThreadActionArgs): Promise<ThreadHistoryResult>;
+  experimental_export(args: ThreadActionArgs): Promise<Uint8Array>;
   /**
-   * Move the thread's event history to the archive now instead of after the
-   * `coldHistoryAfterArchivedDays` / `coldHistoryAfterIdleDays` delay. Rejects
-   * while the thread is running, pinned, has pending work, or is open in a
-   * client. Experimental: see docs/api_to_audit.md.
+   * Import a thread file into the thread it was exported from, adding the
+   * events that thread no longer has. Rejects a file whose thread is not on
+   * this server. Experimental: see docs/api_to_audit.md.
    */
-  experimental_coolHistory(args: ThreadActionArgs): Promise<ThreadHistoryResult>;
-  /**
-   * Restore the thread's archived history into the database now.
-   * Experimental: see docs/api_to_audit.md.
-   */
-  experimental_restoreHistory(
-    args: ThreadActionArgs,
-  ): Promise<ThreadHistoryResult>;
+  experimental_import(args: ThreadImportArgs): Promise<ThreadImportResult>;
   updatePluginMetadata(
     args: ThreadPluginMetadataUpdateArgs,
   ): Promise<ThreadPluginMetadataResult>;
@@ -1429,26 +1428,33 @@ export function createThreadsArea(args: CreateSdkAreaArgs): ThreadsArea {
         }),
       );
     },
-    async experimental_history(input) {
-      return transport.readJson(
-        transport.api.v1.threads[":id"].history.$get({
-          param: { id: input.threadId },
-        }),
+    async experimental_export(input) {
+      const response = await transport.resolve(
+        transport.api.v1.threads[":id"].export.$get(
+          { param: { id: input.threadId } },
+          ...signalRequestArgs(input.signal),
+        ),
       );
+      return new Uint8Array(await response.arrayBuffer());
     },
-    async experimental_coolHistory(input) {
-      return transport.readJson(
-        transport.api.v1.threads[":id"].history.cool.$post({
-          param: { id: input.threadId },
+    async experimental_import(input) {
+      const form = new FormData();
+      form.set(
+        "file",
+        input.file instanceof Blob ? input.file : new Blob([Uint8Array.from(
+          input.file instanceof Uint8Array ? input.file : new Uint8Array(input.file),
+        )]),
+        "thread.jsonl.zst",
+      );
+      const baseUrl = transport.baseUrl.replace(/\/$/u, "");
+      const response = await transport.resolve(
+        transport.fetch(`${baseUrl}/api/v1/threads/import`, {
+          body: form,
+          method: "POST",
+          signal: input.signal,
         }),
       );
-    },
-    async experimental_restoreHistory(input) {
-      return transport.readJson(
-        transport.api.v1.threads[":id"].history.restore.$post({
-          param: { id: input.threadId },
-        }),
-      );
+      return threadImportResponseSchema.parse(await response.json());
     },
     async experimental_listPluginMetadata(input) {
       return transport.readJson(

@@ -98,21 +98,26 @@ Lifecycle:
   bb thread unarchive [id]                 Unarchive a thread
     --self                                 Unarchive current thread
 
-  bb thread history-archive status [id]    Show where the thread's history lives
-  bb thread history-archive cool [id]      Move the history to the archive now
-  bb thread history-archive restore [id]   Restore archived history now
-    --self                                 Target current thread
-    --json                                 Print the history status as JSON
+  bb thread export [id]                    Save the thread as a .jsonl.zst thread file
+    --self                                 Export current thread
+    -o, --output <path>                    Where to write it (default ./<id>.jsonl.zst)
+    --json                                 Print the path and size as JSON
+  bb thread import <file>                  Add a thread file's events back to its thread
+    --json                                 Print the result as JSON
+
+  A thread file is JSONL under zstd: a header line naming the thread, title,
+  project and provider, then every event in sequence order. `zstdcat <file> |
+  jq` and `rg -z` read it without bb. Export works the same for threads whose
+  history bb has archived, without restoring them. Import adds the events the
+  thread no longer has, so it can recover pruned history; it only accepts a
+  file whose thread is on this server.
 
   bb keeps recent threads' history in its database and moves the history of
   threads archived for `coldHistoryAfterArchivedDays` (default 3) or inactive
-  for `coldHistoryAfterIdleDays` (default 30) into compressed files under
+  for `coldHistoryAfterIdleDays` (default 30) into thread files under
   `<data dir>/archive/threads/`. Reading or writing a thread restores it first,
   so `bb thread log`, `bb thread output`, sending, and unarchiving behave the
-  same either way. `cool` refuses while the thread is running, pinned, has
-  pending work, or is open in a client. Unarchiving restores the history and
-  deletes the file. The files are JSONL under zstd: `zstdcat <file> | jq` and
-  `rg -z` read them without bb.
+  same either way. Unarchiving restores the history and deletes the file.
 
   bb thread restore-environment [id]       Restore a destroyed workspace
     --self                                 Restore current thread
