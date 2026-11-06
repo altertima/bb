@@ -1,9 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { sdk } from "@/lib/sdk";
+import { invalidateSavedThreadQueries } from "@/hooks/cache-owners/saved-thread-cache-owner";
 import {
-  THREADS_QUERY_KEY,
   savedThreadsQueryKey,
-  savedThreadsQueryKeyPrefix,
   type SavedThreadsFilters,
 } from "@/hooks/queries/query-keys";
 
@@ -43,12 +42,7 @@ function useSavedThreadMutation(
     mutationFn: async ({ threadId }: { threadId: string }) => {
       await run(threadId);
     },
-    onSettled: async () => {
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: savedThreadsQueryKeyPrefix() }),
-        queryClient.invalidateQueries({ queryKey: [THREADS_QUERY_KEY] }),
-      ]);
-    },
+    onSettled: () => invalidateSavedThreadQueries({ queryClient }),
   });
 }
 
