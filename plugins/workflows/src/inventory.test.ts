@@ -30,7 +30,27 @@ describe("complete workflow inventory", () => {
           name: "inventory-test",
           source,
           sourceHash: "hash",
-          argsJson: '{"sourceCommit":"published"}',
+          argsJson: JSON.stringify({
+            sourceCommit: "a".repeat(40),
+            branch: "task/example",
+            secret: "NEVER-EXPOSE",
+            specText: "PRIVATE-SPEC",
+            profile: {
+              name: "fullstack-quality",
+              maxRepairs: 2,
+              maxConcurrentAgents: 1,
+              maxAgentCalls: 11,
+              maxRunMinutes: 90,
+              roles: Object.fromEntries(
+                ["planner", "backend", "frontend", "qa", "reviewer"].map(
+                  (role) => [
+                    role,
+                    { provider: "pi", model: "test", reasoningLevel: "high" },
+                  ],
+                ),
+              ),
+            },
+          }),
           settingsJson: JSON.stringify(DEFAULT_WORKFLOW_SETTINGS),
           resumedFromRunId: null,
         });
@@ -61,10 +81,12 @@ describe("complete workflow inventory", () => {
       );
       expect(inventory.runs[0]).toMatchObject({
         sourceHash: "hash",
-        args: { sourceCommit: "published" },
+        args: { sourceCommit: "a".repeat(40), branch: "task/example" },
         settings: DEFAULT_WORKFLOW_SETTINGS,
       });
       expect(JSON.stringify(inventory)).not.toContain('"source":');
+      expect(JSON.stringify(inventory)).not.toContain("NEVER-EXPOSE");
+      expect(JSON.stringify(inventory)).not.toContain("PRIVATE-SPEC");
     } finally {
       db.close();
     }
@@ -113,7 +135,14 @@ describe("complete workflow inventory", () => {
       ]);
       expect(raced.filter((r) => r.status === "fulfilled")).toHaveLength(1);
       expect(service.inventory().runs).toHaveLength(1);
-      await start("two", service.inventory().token);
+      const nextToken = service.inventory().token;
+      const oneSlotRace = await Promise.allSettled([
+        start("two", nextToken),
+        start("other", nextToken),
+      ]);
+      expect(oneSlotRace.filter((r) => r.status === "fulfilled")).toHaveLength(
+        1,
+      );
       expect(service.inventory().runs).toHaveLength(2);
       await expect(start("three", service.inventory().token)).rejects.toThrow(
         "capacity unavailable",

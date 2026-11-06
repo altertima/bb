@@ -31,8 +31,12 @@ substitute for the redirected detailed history.
 
 `bb workflows inventory --json` and discoverable RPC `workflows.v1.inventory`
 return a complete server-wide snapshot of queued and running workflows, including
-project, origin, environment, source hash, args, stored settings and current
-settings. Args can contain sensitive task material. The token changes when the
+project, origin, environment, source hash, stored settings and current settings.
+Only allowlisted team admission args (sourceCommit, branch, role tuples and
+budget fields) are returned; arbitrary args, specifications, source and results
+are omitted. This operator-level interface intentionally spans projects: BB
+plugins are full-trust, and its authenticated/private CLI transport is the
+access boundary, not a claimed project authorization boundary. The token changes when the
 snapshot or current settings change. `bb workflows run --inventory-token <token>`
 conditionally inserts a run only when the token still matches and the number of
 active and queued runs is below `maxActiveRuns`. Competing conditional starts

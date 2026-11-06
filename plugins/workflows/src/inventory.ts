@@ -7,6 +7,32 @@ import {
   type WorkflowSettings,
 } from "./settings.js";
 
+const admissionArgsSchema = z.object({
+  sourceCommit: z.string().regex(/^[0-9a-f]{40}$/),
+  branch: z.string().min(1).max(256),
+  profile: z.object({
+    name: z.string().min(1).max(128),
+    maxRepairs: z.number(),
+    maxConcurrentAgents: z.number(),
+    maxAgentCalls: z.number(),
+    maxRunMinutes: z.number(),
+    roles: z.record(
+      z.string().min(1).max(128),
+      z.object({
+        provider: z.string().max(128),
+        model: z.string().max(256),
+        reasoningLevel: z.string().max(128),
+      }),
+    ),
+  }),
+});
+function admissionArgs(
+  text: string,
+): z.infer<typeof admissionArgsSchema> | null {
+  const result = admissionArgsSchema.safeParse(JSON.parse(text));
+  return result.success ? result.data : null;
+}
+
 const runSchema = z.object({
   id: z.string().min(1),
   projectId: z.string().min(1),
@@ -14,7 +40,7 @@ const runSchema = z.object({
   environmentId: z.string().min(1),
   name: z.string(),
   sourceHash: z.string(),
-  args: z.unknown(),
+  args: admissionArgsSchema.nullable(),
   settings: z.record(z.string(), z.number()),
   status: z.enum(["queued", "running"]),
   createdAt: z.number(),
@@ -34,7 +60,7 @@ export const workflowInventoryContract = defineRpcContract({
     input: z.null(),
     output: workflowInventorySchema,
     experimental_description:
-      "Complete server-wide queued/running workflow identities and stored settings. Token supports conditional workflow admission; not a reservation of threads or environments.",
+      "Complete server-wide queued/running workflow identities, non-secret admission metadata and stored settings for trusted server operators and plugins. Token supports conditional workflow admission; not a reservation of threads or environments.",
   },
 });
 
@@ -49,7 +75,7 @@ export function buildWorkflowInventory(
     environmentId: run.environmentId,
     name: run.name,
     sourceHash: run.sourceHash,
-    args: JSON.parse(run.argsJson),
+    args: admissionArgs(run.argsJson),
     settings: parseStoredWorkflowSettings(JSON.parse(run.settingsJson)),
     status: run.status,
     createdAt: run.createdAt,
