@@ -191,6 +191,11 @@ Use `--selected-model <model-id>` to discover its reasoning choices and include 
 - `bb thread archive`
 - `bb thread unarchive`
 - `bb thread restore-environment`
+- `bb thread save`
+- `bb thread saved`
+- `bb thread saved list`
+- `bb thread saved restore`
+- `bb thread saved delete`
 - `bb thread export`
 - `bb thread import`
 - `bb thread pin`

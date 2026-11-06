@@ -1,7 +1,3 @@
-import {
-  dropThreadHistoryArchive,
-  requireHotPublicThread,
-} from "../../services/threads/history-archive/thread-history.js";
 import { refreshProviderRetirement } from "../../services/environments/environment-engine.js";
 import {
   deleteQueuedThreadMessage,
@@ -594,7 +590,7 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
 
   post(routes.regenerateTitle, async (context) => {
     const thread = await regenerateThreadTitle(deps, {
-      thread: await requireHotPublicThread(deps, context.req.param("id")),
+      thread: requirePublicThread(deps.db, context.req.param("id")),
     });
     return context.json(toThreadResponseFromThread(deps, { thread }));
   });
@@ -624,10 +620,9 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
     });
   });
 
-  post(routes.unarchive, async (context) => {
+  post(routes.unarchive, (context) => {
     const thread = requirePublicThread(deps.db, context.req.param("id"));
     if (thread.archivedAt === null) return context.json({ ok: true });
-    await dropThreadHistoryArchive(deps, thread.id);
     const providerThreadId = getLastProviderThreadId(deps, thread.id);
     if (!unarchiveThread(deps.db, deps.hub, thread.id)) {
       if (getThread(deps.db, thread.id)?.archivedAt === null)

@@ -268,7 +268,7 @@ configuration.
 
 `idleProviderSessionTimeoutMinutes` (default `30`) sets how long an agent can sit idle after its last turn before every machine stops its provider process to free memory. Allowed values are `0` (ASAP), `5`, `10`, `30`, and `60`. Use Settings → Providers → Configuration → Release idle agent sessions, `bb settings general idleProviderSessionTimeoutMinutes 5`, or SDK `system.updateGeneralSettings({ ...config.generalSettings, idleProviderSessionTimeoutMinutes: 5 })`. Read `config` with `system.config()` or inspect the value with `bb settings show`. Changes apply live and on reconnect. Machines check every five minutes, so release can take up to five minutes beyond the timeout. Only restorable sessions without active, pending, or background work are eligible; threads keep their history and resume on the next message. Manual `bb thread stop` still works. This is not a memory or loaded-process limit.
 
-`coldHistoryAfterArchivedDays` (default `3`; Settings → Archived threads → Archive history of archived threads, shown while the `coldHistory` experiment is on; the setting has no effect while it is off) moves the event history of a thread archived this long out of `bb.db` into a compressed file under `<data dir>/archive/threads/<thread id>.jsonl.zst`. Allowed values are `1`, `3`, `7`, `14`, `30`, and `"never"`, for example `bb settings general coldHistoryAfterArchivedDays 7`. `coldHistoryAfterIdleDays` (default `30`; allowed `7`, `14`, `30`, `60`, `90`, `"never"`) does the same for unarchived threads with no activity for that long. Nothing is lost: any read or write of the thread (opening it, `bb thread log`, sending, unarchiving) restores its history first, usually in milliseconds. Pinned, running, and prompting threads, and threads with queued messages or background tasks, stay in the database. The move runs in the background at a low duty cycle and returns the freed space to disk gradually. Setting `"never"` stops new moves; threads already archived stay archived until opened. The files are thread files, the same format `bb thread export` writes: JSONL under zstd that `zstdcat <file> | jq` and `rg -z` read, whose first line names the thread, title, project, and provider. `bb thread export` and SDK `threads.experimental_export` read an archived thread without restoring it; `bb thread import` / `threads.experimental_import` add a file's events back to its thread. Read the values with `bb settings show`; SDK callers use `system.config()` and `system.updateGeneralSettings({ ...config.generalSettings, coldHistoryAfterArchivedDays: 7 })`.
+`saveArchivedThreadsAfterDays` (default `7`; Settings → Archived threads → Save archived threads to files, shown while the `savedThreads` experiment is on; the setting has no effect while it is off) saves a thread archived this long to a thread file under `<data dir>/archive/threads/<thread id>.jsonl.zst` and removes it from `bb.db`. Allowed values are `7`, `14`, `30`, `60`, `90`, and `"never"`, for example `bb settings general saveArchivedThreadsAfterDays 30`. Nothing is lost: the file holds the thread, every event, its plugin metadata, tabs, prompt history, search index rows and attachments, and Settings → Archived threads → Saved to files (or `bb thread saved restore <id>`) brings it back as it was. A saved thread leaves the archived list, search and the sidebar until restored. Pinned and running threads, threads with queued messages, prompts or background tasks, threads open in a client, and threads that other threads still point at as their parent or source stay in the database; child threads are saved first. The save runs in the background at a low duty cycle and returns the freed space to disk gradually. A restored thread is not saved again until the delay passes once more. The files are JSONL under zstd that `zstdcat <file> | jq` and `rg -z` read, whose first line names the thread, title, project, and provider. Read the value with `bb settings show`; SDK callers use `system.config()` and `system.updateGeneralSettings({ ...config.generalSettings, saveArchivedThreadsAfterDays: 30 })`.
 
 Server-wide preferences, stored in the bb database and applied live to every
 client. Set them in Settings, with `bb settings general <key> <value>`, or with
@@ -893,15 +893,15 @@ either way.
 `/system/config` and `sdk.system.config()` return the resolved values in
 `experiments`.
 
-- `coldHistory` (off for early adopters too) runs the cold-history tier: it
-  moves the event history of threads past `coldHistoryAfterArchivedDays` /
-  `coldHistoryAfterIdleDays` into thread files under
-  `<data dir>/archive/threads/`, shows those two settings in Settings →
-  Archived threads, and enables `bb thread export`, `bb thread import` and
-  their routes, which answer 403 `cold_history_experiment_disabled` while it
-  is off. Turning it off stops new moves, abandons a move in progress, and
-  pauses the space reclaim; history that was already moved still restores
-  when a thread is read, and deleted threads' files are still removed.
+- `savedThreads` (off for early adopters too) saves archived threads past
+  `saveArchivedThreadsAfterDays` to thread files under
+  `<data dir>/archive/threads/` and removes them from `bb.db`, shows that
+  setting in Settings → Archived threads, and enables `bb thread save`,
+  `bb thread export`, `bb thread import` and their routes, which answer 403
+  `saved_threads_experiment_disabled` while it is off. Turning it off stops
+  new saves and abandons one that has not reached deletion; a thread already
+  being deleted finishes, and saved threads can still be listed, restored,
+  downloaded and deleted with `bb thread saved`.
 - `compactExpiredCache` (on for early adopters) reports `compactionOfferAt` on a thread's context
   usage (timeline `contextWindowUsage` and `bb thread context`) once the
   provider has reported a prompt-cache lifetime, the provider supports manual

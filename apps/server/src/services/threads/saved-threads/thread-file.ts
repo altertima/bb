@@ -7,6 +7,8 @@ import zlib from "node:zlib";
 import { z } from "zod";
 import {
   THREAD_FILE_FORMAT_VERSION,
+  THREAD_FILE_TABLES,
+  type ThreadFileTableRow,
   type ThreadHistoryEventRow,
   type ThreadHistoryRetainedOutputRow,
 } from "@bb/db";
@@ -56,9 +58,26 @@ export interface ThreadFileSeekTable {
   threadId: string;
 }
 
+export interface ThreadFileAttachmentHeader {
+  mimeType: string | null;
+  originalName: string;
+  parts: number;
+  sizeBytes: number;
+  storedPath: string;
+}
+
+export interface ThreadFileAttachmentPart {
+  data: Buffer;
+  index: number;
+  storedPath: string;
+}
+
 export interface ThreadFileFrameContents {
+  attachmentParts: ThreadFileAttachmentPart[];
+  attachments: ThreadFileAttachmentHeader[];
   retained: ThreadHistoryRetainedOutputRow[];
   rows: ThreadHistoryEventRow[];
+  tables: ThreadFileTableRow[];
 }
 
 const frameEntrySchema = z.object({
@@ -134,15 +153,37 @@ const retainedLineSchema = z.object({
   value: z.string(),
 });
 
-export function threadHistoryArchiveDir(dataDir: string): string {
+const tableLineSchema = z.object({
+  kind: z.literal("row"),
+  table: z.enum(THREAD_FILE_TABLES),
+  values: z.record(z.string(), z.union([z.string(), z.number(), z.null()])),
+});
+
+const attachmentLineSchema = z.object({
+  kind: z.literal("attachment"),
+  storedPath: z.string().min(1),
+  originalName: z.string(),
+  mimeType: z.string().nullable(),
+  sizeBytes: z.number().int().nonnegative(),
+  parts: z.number().int().nonnegative(),
+});
+
+const attachmentPartLineSchema = z.object({
+  kind: z.literal("attachmentPart"),
+  storedPath: z.string().min(1),
+  index: z.number().int().nonnegative(),
+  data: z.string(),
+});
+
+export function savedThreadsDir(dataDir: string): string {
   return join(dataDir, "archive", "threads");
 }
 
-export function threadHistoryArchivePath(
+export function savedThreadFilePath(
   dataDir: string,
   threadId: string,
 ): string {
-  return join(threadHistoryArchiveDir(dataDir), `${threadId}${ARCHIVE_EXTENSION}`);
+  return join(savedThreadsDir(dataDir), `${threadId}${ARCHIVE_EXTENSION}`);
 }
 
 function eventColumns(row: ThreadHistoryEventRow) {
@@ -178,6 +219,30 @@ function eventLine(row: ThreadHistoryEventRow): string {
     return JSON.stringify({ ...columns, data: nested });
   }
   return JSON.stringify({ ...columns, dataText: data });
+}
+
+function tableLine(row: ThreadFileTableRow): string {
+  return JSON.stringify({ kind: "row", table: row.table, values: row.values });
+}
+
+function attachmentLine(attachment: ThreadFileAttachmentHeader): string {
+  return JSON.stringify({
+    kind: "attachment",
+    storedPath: attachment.storedPath,
+    originalName: attachment.originalName,
+    mimeType: attachment.mimeType,
+    sizeBytes: attachment.sizeBytes,
+    parts: attachment.parts,
+  });
+}
+
+function attachmentPartLine(part: ThreadFileAttachmentPart): string {
+  return JSON.stringify({
+    kind: "attachmentPart",
+    storedPath: part.storedPath,
+    index: part.index,
+    data: part.data.toString("base64"),
+  });
 }
 
 function retainedLine(row: ThreadHistoryRetainedOutputRow): string {
@@ -246,6 +311,23 @@ export class ThreadFileWriter {
 
   get rowCount(): number {
     return this.totalRows + this.pendingRows;
+  }
+
+  addTableRows(rows: readonly ThreadFileTableRow[]): void {
+    for (const row of rows) this.addLine(tableLine(row));
+  }
+
+  addAttachment(attachment: ThreadFileAttachmentHeader): void {
+    this.addLine(attachmentLine(attachment));
+  }
+
+  addAttachmentPart(part: ThreadFileAttachmentPart): void {
+    this.addLine(attachmentPartLine(part));
+  }
+
+  private addLine(line: string): void {
+    this.pendingLines.push(line);
+    this.pendingBytes += Buffer.byteLength(line) + 1;
   }
 
   addWindow(
@@ -463,29 +545,70 @@ export async function openThreadFile(path: string): Promise<OpenThreadFile> {
   }
 }
 
-function parseFrameLines(raw: Buffer): ThreadFileFrameContents {
+const PARSE_LINES_PER_YIELD = 256;
+
+function lineKind(value: unknown): unknown {
+  return typeof value === "object" && value !== null && "kind" in value
+    ? value.kind
+    : undefined;
+}
+
+async function parseFrameLines(raw: Buffer): Promise<ThreadFileFrameContents> {
   const rows: ThreadHistoryEventRow[] = [];
   const retained: ThreadHistoryRetainedOutputRow[] = [];
-  for (const line of raw.toString("utf8").split("\n")) {
-    if (line.length === 0) continue;
-    const value: unknown = JSON.parse(line);
-    const retainedLineResult = retainedLineSchema.safeParse(value);
-    if (retainedLineResult.success) {
-      const { kind: _kind, ...output } = retainedLineResult.data;
-      retained.push(output);
-      continue;
+  const tables: ThreadFileTableRow[] = [];
+  const attachments: ThreadFileAttachmentHeader[] = [];
+  const attachmentParts: ThreadFileAttachmentPart[] = [];
+  const lines = raw.toString("utf8").split("\n");
+  for (let index = 0; index < lines.length; index += 1) {
+    if (index > 0 && index % PARSE_LINES_PER_YIELD === 0) {
+      await new Promise((resolve) => setImmediate(resolve));
     }
-    const event = eventLineSchema.parse(value);
-    const { kind: _kind, ...columns } = event;
-    if ("dataText" in columns) {
-      const { dataText, ...rest } = columns;
-      rows.push({ ...rest, data: dataText });
-    } else {
-      const { data, ...rest } = columns;
-      rows.push({ ...rest, data: JSON.stringify(data) });
+    const line = lines[index];
+    if (line === undefined || line.length === 0) continue;
+    const value: unknown = JSON.parse(line);
+    switch (lineKind(value)) {
+      case "event": {
+        const { kind: _kind, ...columns } = eventLineSchema.parse(value);
+        if ("dataText" in columns) {
+          const { dataText, ...rest } = columns;
+          rows.push({ ...rest, data: dataText });
+        } else {
+          const { data, ...rest } = columns;
+          rows.push({ ...rest, data: JSON.stringify(data) });
+        }
+        break;
+      }
+      case "retained": {
+        const { kind: _kind, ...output } = retainedLineSchema.parse(value);
+        retained.push(output);
+        break;
+      }
+      case "row": {
+        const row = tableLineSchema.parse(value);
+        tables.push({ table: row.table, values: row.values });
+        break;
+      }
+      case "attachment": {
+        const { kind: _kind, ...header } = attachmentLineSchema.parse(value);
+        attachments.push(header);
+        break;
+      }
+      case "attachmentPart": {
+        const { data, index: partIndex, storedPath } =
+          attachmentPartLineSchema.parse(value);
+        attachmentParts.push({
+          data: Buffer.from(data, "base64"),
+          index: partIndex,
+          storedPath,
+        });
+        break;
+      }
+      default:
+        throw new Error("unknown line kind");
     }
   }
-  return { retained, rows };
+  return { attachmentParts, attachments, retained, rows, tables };
 }
 
 async function readCheckedFrame(
@@ -515,13 +638,20 @@ export async function readThreadFileFrame(
   const raw = await readCheckedFrame(file.handle, entry);
   let contents: ThreadFileFrameContents;
   try {
-    contents = parseFrameLines(raw);
+    contents = await parseFrameLines(raw);
   } catch {
     throw new ThreadFileError(
       `Thread file has an invalid line in the frame at ${entry.offset}`,
     );
   }
-  if (contents.rows.some((row) => row.threadId !== file.table.threadId)) {
+  const threadId = file.table.threadId;
+  if (
+    contents.rows.some((row) => row.threadId !== threadId) ||
+    contents.tables.some(
+      (row) =>
+        (row.table === "threads" ? row.values.id : row.values.thread_id) !== threadId,
+    )
+  ) {
     throw new ThreadFileError(
       `Thread file has events from another thread`,
     );
@@ -553,21 +683,21 @@ export async function verifyThreadFileFrame(
   return countEventLines(await readCheckedFrame(file.handle, entry));
 }
 
-export async function removeThreadHistoryArchive(
+export async function removeSavedThreadFile(
   dataDir: string,
   threadId: string,
 ): Promise<void> {
-  const path = threadHistoryArchivePath(dataDir, threadId);
+  const path = savedThreadFilePath(dataDir, threadId);
   await rm(path, { force: true });
   await rm(`${path}${TEMP_SUFFIX}`, { force: true });
 }
 
-export async function listThreadHistoryArchiveFiles(
+export async function listSavedThreadFiles(
   dataDir: string,
 ): Promise<Array<{ path: string; temporary: boolean; threadId: string }>> {
   let names: string[];
   try {
-    names = await readdir(threadHistoryArchiveDir(dataDir));
+    names = await readdir(savedThreadsDir(dataDir));
   } catch (error) {
     if (isMissingFileError(error)) return [];
     throw error;
@@ -581,7 +711,7 @@ export async function listThreadHistoryArchiveFiles(
     );
     return [
       {
-        path: join(threadHistoryArchiveDir(dataDir), name),
+        path: join(savedThreadsDir(dataDir), name),
         temporary,
         threadId,
       },
@@ -589,12 +719,12 @@ export async function listThreadHistoryArchiveFiles(
   });
 }
 
-export async function threadHistoryArchiveExists(
+export async function savedThreadFileExists(
   dataDir: string,
   threadId: string,
 ): Promise<boolean> {
   try {
-    await stat(threadHistoryArchivePath(dataDir, threadId));
+    await stat(savedThreadFilePath(dataDir, threadId));
     return true;
   } catch (error) {
     if (isMissingFileError(error)) return false;

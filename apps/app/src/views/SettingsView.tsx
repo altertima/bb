@@ -1119,11 +1119,6 @@ const EXPERIMENT_DEFINITIONS: Record<
   ExperimentKey,
   { label: string; description: string }
 > = {
-  coldHistory: {
-    label: "Cold thread history",
-    description:
-      "Move the event history of threads archived or inactive for a while out of the database into compressed thread files, and add bb thread export and bb thread import. Opening a thread brings its history back first. Choose the delays in Settings → Archived threads. Turning this off stops new moves; history already moved still comes back when a thread is opened.",
-  },
   compactExpiredCache: {
     label: "Compact before resuming expired sessions",
     description:
@@ -1153,6 +1148,11 @@ const EXPERIMENT_DEFINITIONS: Record<
     label: "Resume interrupted threads after a restart",
     description:
       "When an update, crash or restart cuts off a running thread or stops a background command a thread is waiting on, bb resumes the thread a few seconds after it comes back and tells the agent what was cut off. Messages you queued meanwhile send after it.",
+  },
+  savedThreads: {
+    label: "Save archived threads to files",
+    description:
+      "Move archived threads out of the database into compressed thread files after a delay you choose in Settings → Archived threads, and add bb thread save, export and import. Saved threads are listed under Saved to files, where Restore brings them back with their full history. Turning this off stops new saves; saved threads can still be restored.",
   },
   serverMove: {
     label: "Server move",
@@ -1441,8 +1441,8 @@ export function SettingsView() {
   } else if (activeSection === "archived") {
     content = (
       <ArchivedThreadsSettingsSection
-        coldHistoryEnabled={
-          systemConfigQuery.data?.experiments.coldHistory ?? false
+        savedThreadsEnabled={
+          systemConfigQuery.data?.experiments.savedThreads ?? false
         }
         disabled={systemConfigQuery.data === undefined}
         generalSettings={generalSettings}

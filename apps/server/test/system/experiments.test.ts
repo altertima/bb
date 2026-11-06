@@ -65,7 +65,7 @@ describe("experiments settings", () => {
       const put = await putExperiments(harness, { timelinePush: true });
       expect(put.status).toBe(200);
       expect(experimentsSchema.parse(await readJson(put))).toEqual({
-        coldHistory: false,
+        savedThreads: false,
         compactExpiredCache: false,
         dismissReadNotifications: false,
         narrowPluginCss: false,

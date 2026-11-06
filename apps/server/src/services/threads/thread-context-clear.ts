@@ -1,4 +1,3 @@
-import { ensureThreadHistoryHot } from "./history-archive/thread-history.js";
 import { createEventId, getThread, type DbTransaction } from "@bb/db";
 import {
   THREAD_CONTEXT_CLEAR_OPERATION,
@@ -23,7 +22,6 @@ export async function clearThreadContext(
     thread: Thread;
   },
 ): Promise<void> {
-  await ensureThreadHistoryHot(deps, args.thread.id);
   await withThreadContextClearGuard(args.thread.id, async () => {
     const thread = getThread(deps.db, args.thread.id);
     if (!thread) {

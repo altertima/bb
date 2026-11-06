@@ -31,6 +31,8 @@ import type {
   ThreadArchiveAllResponse,
   ThreadChildSummaryResponse,
   ThreadImportResponse,
+  SavedThreadListResponse,
+  SavedThreadResponse,
   ThreadConversationOutlineResponse,
   ThreadCountGroupBy,
   ThreadCountQuery,
@@ -214,6 +216,8 @@ export type ThreadBannerActionResult = { ok: true };
 export type ThreadUnarchiveResult = { ok: true };
 export type ThreadArchiveAllResult = ThreadArchiveAllResponse;
 export type ThreadImportResult = ThreadImportResponse;
+export type SavedThreadResult = SavedThreadResponse;
+export type SavedThreadListResult = SavedThreadListResponse;
 export type ThreadReadStateResult = ThreadResponse;
 export type ThreadRestoreEnvironmentResult = ThreadResponse;
 export type ThreadPinOrderResult = ThreadListResponse;
@@ -338,6 +342,14 @@ export interface ThreadRetryArgs {
 export interface ThreadActionArgs {
   signal?: AbortSignal;
   threadId: string;
+}
+
+export interface SavedThreadListArgs {
+  limit?: number;
+  offset?: number;
+  projectId?: string;
+  search?: string;
+  signal?: AbortSignal;
 }
 
 export interface ThreadImportArgs {
@@ -695,17 +707,37 @@ export interface ThreadsArea {
   ): Promise<ThreadMutationResult>;
   /**
    * Download the thread as a thread file: zstd-compressed JSONL with a header
-   * line, then every event in sequence order. Works the same for threads whose
-   * history bb has moved to the cold-history archive, without restoring them.
-   * Experimental: see docs/api_to_audit.md.
+   * line, then the thread's rows, every event in sequence order and its
+   * attachments. Experimental: see docs/api_to_audit.md.
    */
   experimental_export(args: ThreadActionArgs): Promise<Uint8Array>;
   /**
-   * Import a thread file into the thread it was exported from, adding the
-   * events that thread no longer has. Rejects a file whose thread is not on
-   * this server. Experimental: see docs/api_to_audit.md.
+   * Import a thread file: merges the events a thread already in the database
+   * lacks, or recreates a deleted thread in its project. Rejects a file whose
+   * project is not on this server. Experimental: see docs/api_to_audit.md.
    */
   experimental_import(args: ThreadImportArgs): Promise<ThreadImportResult>;
+  /**
+   * Save the thread to a thread file and remove it from the database, through
+   * the same paced job that saves archived threads after
+   * `saveArchivedThreadsAfterDays`. Resolves at once with the `saving` entry.
+   * Experimental: see docs/api_to_audit.md.
+   */
+  experimental_save(args: ThreadActionArgs): Promise<SavedThreadResult>;
+  /**
+   * Threads saved to files, newest first. Experimental: see docs/api_to_audit.md.
+   */
+  experimental_listSaved(args?: SavedThreadListArgs): Promise<SavedThreadListResult>;
+  /**
+   * Bring a saved thread back from its file, with any saved parent or source
+   * thread it links to. Experimental: see docs/api_to_audit.md.
+   */
+  experimental_restoreSaved(args: ThreadActionArgs): Promise<ThreadImportResult>;
+  /**
+   * Permanently delete a saved thread's file. Experimental: see
+   * docs/api_to_audit.md.
+   */
+  experimental_deleteSaved(args: ThreadActionArgs): Promise<{ ok: true }>;
   updatePluginMetadata(
     args: ThreadPluginMetadataUpdateArgs,
   ): Promise<ThreadPluginMetadataResult>;
@@ -1436,6 +1468,45 @@ export function createThreadsArea(args: CreateSdkAreaArgs): ThreadsArea {
         ),
       );
       return new Uint8Array(await response.arrayBuffer());
+    },
+    async experimental_save(input) {
+      return transport.readJson(
+        transport.api.v1.threads[":id"].save.$post(
+          { param: { id: input.threadId } },
+          ...signalRequestArgs(input.signal),
+        ),
+      );
+    },
+    async experimental_listSaved(input = {}) {
+      return transport.readJson(
+        transport.api.v1["saved-threads"].$get(
+          {
+            query: {
+              ...(input.projectId === undefined ? {} : { projectId: input.projectId }),
+              ...(input.search === undefined ? {} : { search: input.search }),
+              ...(input.limit === undefined ? {} : { limit: String(input.limit) }),
+              ...(input.offset === undefined ? {} : { offset: String(input.offset) }),
+            },
+          },
+          ...signalRequestArgs(input.signal),
+        ),
+      );
+    },
+    async experimental_restoreSaved(input) {
+      return transport.readJson(
+        transport.api.v1["saved-threads"][":id"].restore.$post(
+          { param: { id: input.threadId } },
+          ...signalRequestArgs(input.signal),
+        ),
+      );
+    },
+    async experimental_deleteSaved(input) {
+      return transport.readJson(
+        transport.api.v1["saved-threads"][":id"].$delete(
+          { param: { id: input.threadId } },
+          ...signalRequestArgs(input.signal),
+        ),
+      );
     },
     async experimental_import(input) {
       const form = new FormData();

@@ -1,4 +1,3 @@
-import { ensureThreadHistoryHot } from "./history-archive/thread-history.js";
 import { createHash, randomUUID } from "node:crypto";
 import { and, desc, eq, isNull, lt, sql } from "drizzle-orm";
 import {
@@ -478,7 +477,6 @@ export async function editThreadMessage(
     thread: Thread;
   },
 ): Promise<EditMessageResponse> {
-  await ensureThreadHistoryHot(deps, args.thread.id);
   const fingerprint = requestFingerprint(args.payload);
   const committed = findCommittedOperation(deps.db, {
     operationId: args.payload.operationId,

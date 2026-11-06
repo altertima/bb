@@ -314,11 +314,9 @@ export function registerSystemRoutes(
         settings.idleProviderSessionTimeoutMinutes === undefined
           ? current.idleProviderSessionTimeoutMinutes
           : settings.idleProviderSessionTimeoutMinutes,
-      coldHistoryAfterArchivedDays:
-        settings.coldHistoryAfterArchivedDays ??
-        current.coldHistoryAfterArchivedDays,
-      coldHistoryAfterIdleDays:
-        settings.coldHistoryAfterIdleDays ?? current.coldHistoryAfterIdleDays,
+      saveArchivedThreadsAfterDays:
+        settings.saveArchivedThreadsAfterDays ??
+        current.saveArchivedThreadsAfterDays,
       allowFastServiceTier:
         settings.allowFastServiceTier ?? current.allowFastServiceTier,
       telemetryEnabled: settings.telemetryEnabled ?? current.telemetryEnabled,

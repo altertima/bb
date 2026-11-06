@@ -98,28 +98,31 @@ Lifecycle:
   bb thread unarchive [id]                 Unarchive a thread
     --self                                 Unarchive current thread
 
-  bb thread export [id]                    Save the thread as a .jsonl.zst thread file
+  bb thread save [id]                      Save the thread to a file and remove it from bb
+    --self                                 Save current thread
+  bb thread saved list                     List saved threads, newest first
+    --project <id>                         Only one project
+    --search <text>                        Only titles containing the text
+    --limit <n>                            How many (default 50, at most 200)
+  bb thread saved restore <id>             Bring a saved thread back
+  bb thread saved delete <id>              Permanently delete a saved thread's file
+  bb thread export [id]                    Write the thread to a .jsonl.zst thread file
     --self                                 Export current thread
     -o, --output <path>                    Where to write it (default ./<id>.jsonl.zst)
-    --json                                 Print the path and size as JSON
-  bb thread import <file>                  Add a thread file's events back to its thread
-    --json                                 Print the result as JSON
+  bb thread import <file>                  Add a thread file back: merges into its thread,
+                                           or recreates it if it was deleted
+    --json                                 Machine-readable output (all of the above)
 
-  Export, import, and moving history out of the database need the
-  `coldHistory` experiment (`bb settings experiment coldHistory true`).
-  A thread file is JSONL under zstd: a header line naming the thread, title,
-  project and provider, then every event in sequence order. `zstdcat <file> |
-  jq` and `rg -z` read it without bb. Export works the same for threads whose
-  history bb has archived, without restoring them. Import adds the events the
-  thread no longer has, so it can recover pruned history; it only accepts a
-  file whose thread is on this server.
-
-  bb keeps recent threads' history in its database and moves the history of
-  threads archived for `coldHistoryAfterArchivedDays` (default 3) or inactive
-  for `coldHistoryAfterIdleDays` (default 30) into thread files under
-  `<data dir>/archive/threads/`. Reading or writing a thread restores it first,
-  so `bb thread log`, `bb thread output`, sending, and unarchiving behave the
-  same either way. Unarchiving restores the history and deletes the file.
+  Saving, exporting and importing need the `savedThreads` experiment
+  (`bb settings experiment savedThreads true`); listing, restoring and
+  deleting saved threads always work. bb saves threads archived for
+  `saveArchivedThreadsAfterDays` (default 7) on its own, at a low duty cycle.
+  A saved thread is gone from the database, the archived list and search until
+  restored; restoring also restores a saved parent or source thread it links
+  to. A thread file is JSONL under zstd: a header line naming the thread,
+  title, project and provider, then the thread's rows, every event in sequence
+  order, and its attachments. `zstdcat <file> | jq` and `rg -z` read it
+  without bb. Import only accepts a file whose project is on this server.
 
   bb thread restore-environment [id]       Restore a destroyed workspace
     --self                                 Restore current thread

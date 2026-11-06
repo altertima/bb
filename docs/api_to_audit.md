@@ -1159,32 +1159,46 @@ Docs: `backend-sdk.md`.
 3. **Actions.** Confirm `archive` and `delete` are the only cascading
    actions worth previewing.
 
-## `bb.sdk.threads.experimental_export` / `experimental_import`
+## `bb.sdk.threads.experimental_export` / `experimental_import` / `experimental_save` / `experimental_listSaved` / `experimental_restoreSaved` / `experimental_deleteSaved`
 
-`GET /threads/:id/export` returns the thread as a thread file
-(`application/zstd`): zstd-compressed JSONL whose first line is a header
-(`format: "bb.thread"`, `formatVersion`, thread id, title, project, provider,
-created/archived/exported times), followed by every event in sequence order and
-the retained outputs of those events, with a seek table in a zstd skippable
-frame. A thread whose history the cold-history tier has moved out of `bb.db` is
-exported from its archive file plus any newer rows, without being restored.
-`POST /threads/import` takes the file as a multipart `file` field and inserts
-the events its thread does not already have (`INSERT OR IGNORE`), restoring a
-cold thread first; it answers `{ threadId, rows, insertedRows }`, 404 when the
-file's thread is not on this server, and 400 for a file that is not a thread
-file or uses a format version this bb does not read. Both answer 403
-`cold_history_experiment_disabled` while the `coldHistory` experiment is off.
-Core callers:
-`bb thread export` / `bb thread import`. The cold-history tier uses the same
-writer to produce its archive files and the same insert path to restore them,
-and its restore refuses unknown format versions the same way, leaving the
-thread archived.
+A thread file (`application/zstd`) is zstd-compressed JSONL. The first line is
+a header (`format: "bb.thread"`, `formatVersion`, thread id, title, project,
+provider, and created, archived and exported times). Then come the thread's own
+rows (`threads`, plugin metadata, tabs, prompt history, search segments,
+conversation outline) as `row` lines, every event in sequence order with its
+retained outputs, and the thread's attachments as base64 `attachment` lines.
+A seek table sits in a zstd skippable frame.
 
-Stabilization: decide what a cross-server import does with project mapping,
-attachments and provider sessions (it is refused today), commit to reading
-every shipped format version, run one release with the cold tier on by default
-without restore failures in telemetry or bug reports, then rename project-wide
-and drop this entry.
+- `GET /threads/:id/export` writes one for a thread in the database.
+- `POST /threads/import` takes a file as the multipart `file` field. If the
+  thread exists, it inserts the events the thread lacks (`INSERT OR IGNORE`);
+  if not, it recreates the thread in its project, restoring a saved parent or
+  source thread first. It answers `{ threadId, rows, insertedRows }`: 404 when
+  the project is not on this server, 400 for a file that is not a thread file
+  or uses a format version this bb does not read.
+- `POST /threads/:id/save` queues the thread into the paced saving job, which
+  exports, verifies, hides, deletes in batches and finally drops the thread
+  row. It answers with the `saving` entry, or 409 while the thread is pinned,
+  running, open in a client, has pending work, or is a parent or source of a
+  thread still in the database.
+- `GET /saved-threads` lists saved threads (`saving`, `deleting`, `saved`),
+  `POST /saved-threads/:id/restore` imports a saved file,
+  `DELETE /saved-threads/:id` removes it permanently, and
+  `GET /saved-threads/:id/file` downloads it.
+
+Export, import and save answer 403 `saved_threads_experiment_disabled` while
+the `savedThreads` experiment is off; the saved-thread routes always work.
+Core callers: `bb thread export|import|save` and `bb thread saved
+list|restore|delete`; Settings → Archived threads lists and restores saved
+threads; the automatic `saveArchivedThreadsAfterDays` policy runs the same job
+that `save` queues into, and restoring from the list goes through the same
+import path.
+
+Stabilization: decide what a cross-server import does with projects,
+environments and provider sessions (it is refused today), commit to reading
+every shipped format version, run one release with the experiment on for
+early adopters without restore failures in telemetry or bug reports, then
+rename project-wide and drop this entry.
 
 Docs: `bb guide thread-lifecycle`, `bb guide customization`.
 

@@ -14,24 +14,14 @@ export const idleProviderSessionTimeoutMinutesSchema = z.literal(
   IDLE_PROVIDER_SESSION_TIMEOUT_MINUTES,
 );
 
-export const COLD_HISTORY_AFTER_ARCHIVED_DAYS = [1, 3, 7, 14, 30] as const;
+export const SAVE_ARCHIVED_THREADS_AFTER_DAYS = [7, 14, 30, 60, 90] as const;
 
-export const coldHistoryAfterArchivedDaysSchema = z.union([
-  z.literal(COLD_HISTORY_AFTER_ARCHIVED_DAYS),
+export const saveArchivedThreadsAfterDaysSchema = z.union([
+  z.literal(SAVE_ARCHIVED_THREADS_AFTER_DAYS),
   z.literal("never"),
 ]);
-export type ColdHistoryAfterArchivedDays = z.infer<
-  typeof coldHistoryAfterArchivedDaysSchema
->;
-
-export const COLD_HISTORY_AFTER_IDLE_DAYS = [7, 14, 30, 60, 90] as const;
-
-export const coldHistoryAfterIdleDaysSchema = z.union([
-  z.literal(COLD_HISTORY_AFTER_IDLE_DAYS),
-  z.literal("never"),
-]);
-export type ColdHistoryAfterIdleDays = z.infer<
-  typeof coldHistoryAfterIdleDaysSchema
+export type SaveArchivedThreadsAfterDays = z.infer<
+  typeof saveArchivedThreadsAfterDaysSchema
 >;
 
 export const managedBranchPrefixSchema = z
@@ -61,8 +51,7 @@ export const appSettingsSchema = z
     telemetryEnabled: z.boolean(),
     managedBranchPrefix: managedBranchPrefixSchema,
     idleProviderSessionTimeoutMinutes: idleProviderSessionTimeoutMinutesSchema,
-    coldHistoryAfterArchivedDays: coldHistoryAfterArchivedDaysSchema,
-    coldHistoryAfterIdleDays: coldHistoryAfterIdleDaysSchema,
+    saveArchivedThreadsAfterDays: saveArchivedThreadsAfterDaysSchema,
     machineServerUrl: z
       .string()
       .url()
@@ -99,8 +88,7 @@ export const defaultAppSettings: AppSettings = {
   telemetryEnabled: true,
   managedBranchPrefix: DEFAULT_MANAGED_BRANCH_PREFIX,
   idleProviderSessionTimeoutMinutes: 30,
-  coldHistoryAfterArchivedDays: 3,
-  coldHistoryAfterIdleDays: 30,
+  saveArchivedThreadsAfterDays: 7,
   machineServerUrl: null,
   defaultMachineAccess: null,
   machineGitCredentialsEnabled: true,
@@ -114,8 +102,7 @@ export const appSettingsUpdateSchema = z.union([
   appSettingsSchema.extend({
     idleProviderSessionTimeoutMinutes:
       idleProviderSessionTimeoutMinutesSchema.optional(),
-    coldHistoryAfterArchivedDays: coldHistoryAfterArchivedDaysSchema.optional(),
-    coldHistoryAfterIdleDays: coldHistoryAfterIdleDaysSchema.optional(),
+    saveArchivedThreadsAfterDays: saveArchivedThreadsAfterDaysSchema.optional(),
     terminalCopyOnSelect: z.boolean().optional(),
     allowFastServiceTier: z.boolean().optional(),
     telemetryEnabled: z.boolean().optional(),
@@ -129,8 +116,7 @@ export const appSettingsUpdateSchema = z.union([
   appSettingsSchema.omit({ showDiagnosticEvents: true }).extend({
     idleProviderSessionTimeoutMinutes:
       idleProviderSessionTimeoutMinutesSchema.optional(),
-    coldHistoryAfterArchivedDays: coldHistoryAfterArchivedDaysSchema.optional(),
-    coldHistoryAfterIdleDays: coldHistoryAfterIdleDaysSchema.optional(),
+    saveArchivedThreadsAfterDays: saveArchivedThreadsAfterDaysSchema.optional(),
     terminalCopyOnSelect: z.boolean().optional(),
     allowFastServiceTier: z.boolean().optional(),
     telemetryEnabled: z.boolean().optional(),

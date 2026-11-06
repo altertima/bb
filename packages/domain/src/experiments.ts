@@ -1,7 +1,6 @@
 import { z } from "zod";
 
 export const experimentKeys = [
-  "coldHistory",
   "compactExpiredCache",
   "dismissReadNotifications",
   "narrowPluginCss",
@@ -9,6 +8,7 @@ export const experimentKeys = [
   "performanceDiagnostics",
   "pluginUpdates",
   "resumeThreadsAfterRestart",
+  "savedThreads",
   "skipFocusedThreadNotifications",
   "threadContextCard",
   "threadRowMetadata",
@@ -28,7 +28,6 @@ export const experimentUpdatesSchema = z.partialRecord(
 export type ExperimentUpdates = z.infer<typeof experimentUpdatesSchema>;
 
 export const defaultExperiments: Experiments = {
-  coldHistory: false,
   compactExpiredCache: false,
   dismissReadNotifications: false,
   narrowPluginCss: false,
@@ -36,6 +35,7 @@ export const defaultExperiments: Experiments = {
   performanceDiagnostics: false,
   pluginUpdates: false,
   resumeThreadsAfterRestart: false,
+  savedThreads: false,
   skipFocusedThreadNotifications: false,
   threadContextCard: false,
   threadRowMetadata: false,
@@ -44,7 +44,6 @@ export const defaultExperiments: Experiments = {
 };
 
 export const earlyAdopterExperiments: Experiments = {
-  coldHistory: false,
   compactExpiredCache: true,
   dismissReadNotifications: false,
   narrowPluginCss: false,
@@ -52,6 +51,7 @@ export const earlyAdopterExperiments: Experiments = {
   performanceDiagnostics: false,
   pluginUpdates: true,
   resumeThreadsAfterRestart: false,
+  savedThreads: false,
   skipFocusedThreadNotifications: true,
   threadContextCard: false,
   threadRowMetadata: true,

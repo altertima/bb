@@ -895,31 +895,39 @@ export const retainedEventOutputs = sqliteTable(
   ],
 );
 
-export type ThreadHistoryArchiveState =
-  | "exporting"
-  | "cooling"
-  | "cold"
+export type SavedThreadState =
+  | "saving"
+  | "deleting"
+  | "saved"
   | "restoring"
-  | "hot";
+  | "restored";
 
-export const threadHistoryArchives = sqliteTable(
-  "thread_history_archives",
+export const savedThreads = sqliteTable(
+  "saved_threads",
   {
-    threadId: text("thread_id")
-      .primaryKey()
-      .references(() => threads.id, { onDelete: "cascade" }),
-    state: text("state").$type<ThreadHistoryArchiveState>().notNull(),
+    threadId: text("thread_id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    state: text("state").$type<SavedThreadState>().notNull(),
+    title: text("title"),
+    providerId: text("provider_id").notNull(),
+    threadCreatedAt: integer("thread_created_at").notNull(),
+    archivedAt: integer("archived_at"),
     formatVersion: integer("format_version").notNull(),
-    coldBeforeSequence: integer("cold_before_sequence").notNull(),
+    throughSequence: integer("through_sequence").notNull(),
     cursorSequence: integer("cursor_sequence").notNull(),
     rowCount: integer("row_count").notNull(),
     rawBytes: integer("raw_bytes").notNull(),
     packedBytes: integer("packed_bytes").notNull(),
-    coldAt: integer("cold_at"),
+    savedAt: integer("saved_at"),
     restoredAt: integer("restored_at"),
     updatedAt: integer("updated_at").notNull(),
   },
-  (table) => [index("thread_history_archives_state_idx").on(table.state)],
+  (table) => [
+    index("saved_threads_state_idx").on(table.state),
+    index("saved_threads_project_saved_idx").on(table.projectId, table.savedAt),
+  ],
 );
 
 export const threadPruningCursors = sqliteTable(
