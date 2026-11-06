@@ -10,6 +10,7 @@ import {
   pinThread,
   projectAttachmentBackfills,
   setAppSettings,
+  setExperiments,
   threads,
 } from "@bb/db";
 import { threadScope, turnScope } from "@bb/domain";
@@ -57,6 +58,7 @@ function seedArchivedConversation(
   options: { archive?: boolean } = {},
 ) {
   const { environment, project, thread } = seedThreadFixture(harness);
+  setExperiments(harness.db, { coldHistory: true });
   harness.db
     .insert(projectAttachmentBackfills)
     .values({
@@ -523,6 +525,35 @@ describe("thread history cold tier", () => {
       expect(response.status).toBe(409);
       expect(cold(harness, thread.id)).toBe(true);
       expect(getThreadHistoryArchive(harness.db, thread.id)?.state).toBe("cold");
+    });
+  });
+  it("with the experiment off, stops cooling and export and import but still restores cold threads", async () => {
+    await withTestHarness(async (harness) => {
+      const { thread } = seedArchivedConversation(harness);
+      const before = allRows(harness, thread.id);
+      const bytes = await exportThread(harness, thread.id);
+      const job = new ThreadHistoryCoolingJob(harness.deps);
+      while (getThreadHistoryArchive(harness.db, thread.id)?.state !== "exporting") {
+        expect(await job.step()).toBe("worked");
+      }
+      setExperiments(harness.db, { coldHistory: false });
+      expect(await job.step()).toBe("idle");
+      expect(getThreadHistoryArchive(harness.db, thread.id)).toBeNull();
+      await expect(
+        stat(`${threadHistoryArchivePath(harness.config.dataDir, thread.id)}.tmp`),
+      ).rejects.toThrow();
+      expect(await coolNow(harness, thread.id)).toBe(false);
+
+      const exported = await harness.app.request(`/api/v1/threads/${thread.id}/export`);
+      expect(exported.status).toBe(403);
+      expect((await importThread(harness, bytes)).status).toBe(403);
+
+      setExperiments(harness.db, { coldHistory: true });
+      expect(await coolNow(harness, thread.id)).toBe(true);
+      setExperiments(harness.db, { coldHistory: false });
+      const timeline = await harness.app.request(`/api/v1/threads/${thread.id}/timeline`);
+      expect(timeline.status).toBe(200);
+      expect(allRows(harness, thread.id)).toEqual(before);
     });
   });
 });

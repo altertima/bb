@@ -1172,7 +1172,9 @@ exported from its archive file plus any newer rows, without being restored.
 the events its thread does not already have (`INSERT OR IGNORE`), restoring a
 cold thread first; it answers `{ threadId, rows, insertedRows }`, 404 when the
 file's thread is not on this server, and 400 for a file that is not a thread
-file or uses a format version this bb does not read. Core callers:
+file or uses a format version this bb does not read. Both answer 403
+`cold_history_experiment_disabled` while the `coldHistory` experiment is off.
+Core callers:
 `bb thread export` / `bb thread import`. The cold-history tier uses the same
 writer to produce its archive files and the same insert path to restore them,
 and its restore refuses unknown format versions the same way, leaving the

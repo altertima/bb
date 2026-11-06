@@ -1119,6 +1119,11 @@ const EXPERIMENT_DEFINITIONS: Record<
   ExperimentKey,
   { label: string; description: string }
 > = {
+  coldHistory: {
+    label: "Cold thread history",
+    description:
+      "Move the event history of threads archived or inactive for a while out of the database into compressed thread files, and add bb thread export and bb thread import. Opening a thread brings its history back first. Choose the delays in Settings → Archived threads. Turning this off stops new moves; history already moved still comes back when a thread is opened.",
+  },
   compactExpiredCache: {
     label: "Compact before resuming expired sessions",
     description:
@@ -1436,6 +1441,9 @@ export function SettingsView() {
   } else if (activeSection === "archived") {
     content = (
       <ArchivedThreadsSettingsSection
+        coldHistoryEnabled={
+          systemConfigQuery.data?.experiments.coldHistory ?? false
+        }
         disabled={systemConfigQuery.data === undefined}
         generalSettings={generalSettings}
         onGeneralSettingsChange={(next) =>

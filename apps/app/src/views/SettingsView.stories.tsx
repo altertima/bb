@@ -335,6 +335,7 @@ function ArchivedThreadsSettingsStory() {
     useState<AppSettings>(defaultAppSettings);
   return (
     <ArchivedThreadsSettingsSection
+      coldHistoryEnabled
       disabled={false}
       generalSettings={generalSettings}
       onGeneralSettingsChange={(patch) =>

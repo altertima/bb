@@ -105,6 +105,8 @@ Lifecycle:
   bb thread import <file>                  Add a thread file's events back to its thread
     --json                                 Print the result as JSON
 
+  Export, import, and moving history out of the database need the
+  `coldHistory` experiment (`bb settings experiment coldHistory true`).
   A thread file is JSONL under zstd: a header line naming the thread, title,
   project and provider, then every event in sequence order. `zstdcat <file> |
   jq` and `rg -z` read it without bb. Export works the same for threads whose

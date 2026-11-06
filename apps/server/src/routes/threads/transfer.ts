@@ -6,6 +6,7 @@ import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import type { ReadableStream as NodeReadableStream } from "node:stream/web";
 import type { Hono } from "hono";
+import { getExperiments } from "@bb/db";
 import {
   publicApiRoutes,
   typedRoutes,
@@ -21,6 +22,19 @@ import {
 import { readMultipartFormData } from "../multipart-form-data.js";
 
 const THREAD_FILE_CONTENT_TYPE = "application/zstd";
+
+const COLD_HISTORY_EXPERIMENT_DISABLED_MESSAGE =
+  'Thread export and import are off. Turn on the "Cold thread history" experiment in Settings → Experiments, or run bb settings experiment coldHistory true, then try again.';
+
+function assertColdHistoryExperimentEnabled(deps: AppDeps): void {
+  if (!getExperiments(deps.db).coldHistory) {
+    throw new ApiError(
+      403,
+      "cold_history_experiment_disabled",
+      COLD_HISTORY_EXPERIMENT_DISABLED_MESSAGE,
+    );
+  }
+}
 
 export function registerThreadTransferRoutes(app: Hono, deps: AppDeps): void {
   const { get, post } = typedRoutes<PublicApiSchema>(app, {
@@ -38,6 +52,7 @@ export function registerThreadTransferRoutes(app: Hono, deps: AppDeps): void {
     });
 
   get(routes.exportThread, async (context) => {
+    assertColdHistoryExperimentEnabled(deps);
     const thread = requirePublicThread(deps.db, context.req.param("id"));
     const fileName = `${thread.id}.jsonl.zst`;
     const workDir = await makeWorkDir();
@@ -65,6 +80,7 @@ export function registerThreadTransferRoutes(app: Hono, deps: AppDeps): void {
   });
 
   post(routes.importThread, async (context) => {
+    assertColdHistoryExperimentEnabled(deps);
     const formData = await readMultipartFormData(context.req);
     const fields = [...formData.keys()];
     const file = formData.get("file");

@@ -179,7 +179,7 @@ function parseIdleHistoryChoice(
   return COLD_HISTORY_AFTER_IDLE_DAYS.find((days) => String(days) === key) ?? null;
 }
 
-interface ArchivedThreadsSettingsSectionProps {
+interface HistoryArchiveSettingsProps {
   disabled: boolean;
   generalSettings: AppSettings;
   onGeneralSettingsChange: (
@@ -187,11 +187,15 @@ interface ArchivedThreadsSettingsSectionProps {
   ) => Promise<unknown> | void;
 }
 
+interface ArchivedThreadsSettingsSectionProps extends HistoryArchiveSettingsProps {
+  coldHistoryEnabled: boolean;
+}
+
 function HistoryArchiveSettings({
   disabled,
   generalSettings,
   onGeneralSettingsChange,
-}: ArchivedThreadsSettingsSectionProps) {
+}: HistoryArchiveSettingsProps) {
   return (
     <div className="space-y-1">
       <ChoiceDropdownSetting
@@ -231,6 +235,7 @@ function HistoryArchiveSettings({
 }
 
 export function ArchivedThreadsSettingsSection({
+  coldHistoryEnabled,
   disabled,
   generalSettings,
   onGeneralSettingsChange,
@@ -321,11 +326,13 @@ export function ArchivedThreadsSettingsSection({
         </p>
       </div>
 
-      <HistoryArchiveSettings
-        disabled={disabled}
-        generalSettings={generalSettings}
-        onGeneralSettingsChange={onGeneralSettingsChange}
-      />
+      {coldHistoryEnabled ? (
+        <HistoryArchiveSettings
+          disabled={disabled}
+          generalSettings={generalSettings}
+          onGeneralSettingsChange={onGeneralSettingsChange}
+        />
+      ) : null}
 
       <div className="flex flex-wrap items-center gap-2">
         <div className="relative min-w-56 flex-1">

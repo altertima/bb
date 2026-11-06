@@ -4,6 +4,7 @@ import {
   deleteThreadHistoryColdWindow,
   deleteThreadPruningCursorsForThread,
   getAppSettings,
+  getExperiments,
   getLatestThreadSequence,
   getThreadHistoryArchive,
   hasRunningThreads,
@@ -128,6 +129,10 @@ export class ThreadHistoryCoolingJob {
   }
 
   async step(): Promise<StepOutcome> {
+    if (!getExperiments(this.deps.db).coldHistory) {
+      await this.cancel();
+      return "idle";
+    }
     if (this.task === null) {
       const picked = this.pickCandidate();
       if (picked.kind === "scanned") return "worked";
@@ -144,6 +149,16 @@ export class ThreadHistoryCoolingJob {
       case "delete":
         return this.deleteStep(this.task);
     }
+  }
+
+  private async cancel(): Promise<void> {
+    const task = this.task;
+    if (task === null) return;
+    if (task.kind === "delete") {
+      this.task = null;
+      return;
+    }
+    await this.abandon(task, "The cold thread history experiment was turned off");
   }
 
   async stop(): Promise<void> {
