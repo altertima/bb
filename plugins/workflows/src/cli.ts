@@ -336,6 +336,11 @@ export function registerWorkflowCli(
               description:
                 "JSON value exposed to the script as the global `args`, verbatim",
             },
+            "inventory-token": {
+              type: "string",
+              description:
+                "Start only if the complete active-run inventory and current settings still match this token",
+            },
             resume: {
               type: "string",
               placeholder: "run-id",
@@ -358,6 +363,7 @@ export function registerWorkflowCli(
                 source: prepared.source,
                 args: parseJsonOption(input.options.args),
                 resumedFromRunId: input.options.resume ?? null,
+                inventoryToken: input.options["inventory-token"],
               });
               return success({
                 runId: run.id,
@@ -461,6 +467,16 @@ export function registerWorkflowCli(
                 },
               ]);
             });
+          },
+        }),
+        inventory: cliCommand({
+          summary:
+            "Read complete active workflow identities across all projects",
+          options: {
+            json: { type: "boolean", description: JSON_OPTION_DESCRIPTION },
+          },
+          run() {
+            return guarded(async () => success(service.inventory()));
           },
         }),
         list: cliCommand({

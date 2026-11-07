@@ -337,6 +337,15 @@ export function listRuns(
     .map(runRow);
 }
 
+export function listActiveRuns(db: Db): WorkflowRunRow[] {
+  return statement(
+    db,
+    `${RUN_SELECT} WHERE status IN ('queued', 'running') ORDER BY id`,
+  )
+    .all()
+    .map(runRow);
+}
+
 export function claimQueuedRun(
   db: Db,
   maxActiveRuns: number,

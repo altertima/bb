@@ -111,7 +111,7 @@ describe("workflows CLI argument validation", () => {
     ]);
     expect(
       harness.registrations.cli?.commands.map((command) => command.name),
-    ).toEqual(["run", "validate", "status", "history", "list", "stop"]);
+    ).toEqual(["run", "validate", "status", "history", "inventory", "list", "stop"]);
     const run = harness.registrations.agentTools.find(
       (tool) => tool.name === "bb_workflow_run",
     );

@@ -29,6 +29,23 @@ remains authoritative.
 `list` also returns compact summaries; it is safe for discovery but is not a
 substitute for the redirected detailed history.
 
+`bb workflows inventory --json` and discoverable RPC `workflows.v1.inventory`
+return a complete server-wide snapshot of queued and running workflows, including
+project, origin, environment, source hash, stored settings and current settings.
+Only allowlisted team admission args (sourceCommit, branch, role tuples and
+budget fields) are returned; arbitrary args, specifications, source and results
+are omitted. This operator-level interface intentionally spans projects: BB
+plugins are full-trust, and its authenticated/private CLI transport is the
+access boundary, not a claimed project authorization boundary. The token changes when the
+snapshot or current settings change. `bb workflows run --inventory-token <token>`
+conditionally inserts a run only when the token still matches and the number of
+active and queued runs is below `maxActiveRuns`. Competing conditional starts
+with the same token cannot both succeed. This does not reserve environments or
+threads and cannot prevent a non-cooperating dispatcher from starting work.
+Malformed stored args/settings fail the entire snapshot explicitly with the run
+ID; inventory never drops an unknown run or substitutes current settings for its
+stored limits. Non-team args that are valid JSON yield null admission metadata.
+
 Detailed history can contain every prompt, critique, result, and call record,
 so never print it directly into the agent transcript. Materialize one bounded
 JSONL page on the execution host, then use normal file-navigation tools:
